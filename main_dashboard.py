@@ -19,7 +19,7 @@ from investor_dashboard.hedge_feed_manager import HedgeFeedManager
 
 app = FastAPI(title="Atticus Investor Dashboard", version="1.0.0")
 
-# ← BULLETPROOF CORS CONFIGURATION (Based on search results best practices)
+# ← ENHANCED CORS CONFIGURATION FOR LOVABLE INTEGRATION
 origins = [
     # Local development
     "http://localhost:3000",
@@ -27,26 +27,29 @@ origins = [
     "http://127.0.0.1:3000",
     "http://127.0.0.1:8080",
     
-    # Lovable domains (CRITICAL - exact match from your error)
+    # Lovable domains (CRITICAL for frontend integration)
     "https://preview--atticusq-live-view.lovable.app",
     "https://atticusq-live-view.lovable.app",
+    "https://preview--*.lovable.app",
+    "https://*.lovable.app",
     
-    # Your Render deployment  
+    # Your Render deployment
     "https://atticus-demo-dashboard.onrender.com",
+    "https://*.onrender.com",
     
-    # Additional safety origins
+    # Development domains
     "http://localhost",
     "https://localhost",
 ]
 
-# ← ENHANCED CORS (Following FastAPI best practices from search results)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,                    # Specific origins (not "*" for security)
-    allow_credentials=True,                   # Enable credentials
-    allow_methods=["*"],                      # All HTTP methods
-    allow_headers=["*"],                      # All headers
-    expose_headers=["*"],                     # Expose all headers
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "HEAD", "PATCH"],
+    allow_headers=["*"],
+    expose_headers=["*"],
+    max_age=3600,  # Cache preflight requests for 1 hour
 )
 
 # Global instances
@@ -57,7 +60,7 @@ bot_trader_simulator = BotTraderSimulator()
 audit_engine = AuditEngine()
 hedge_feed_manager = HedgeFeedManager()
 
-# ← CRITICAL: Initialize dashboard API globals  
+# ← FIX: Initialize dashboard API globals
 from investor_dashboard import dashboard_api
 dashboard_api.revenue_engine = revenue_engine
 dashboard_api.liquidity_manager = liquidity_manager
@@ -151,6 +154,7 @@ def dashboard_update_loop():
 # Include dashboard API routes
 app.include_router(dashboard_router, prefix="/api/dashboard")
 
+# ← FIXED: Complete endpoint list with all 11 endpoints
 @app.get("/")
 async def root():
     return {
@@ -167,18 +171,52 @@ async def root():
             "/api/dashboard/hedge-execution-feed",
             "/api/dashboard/audit-summary",
             "/api/dashboard/recent-trades",
-            "/api/dashboard/hedge-metrics"
+            "/api/dashboard/hedge-metrics",
+            "/api/dashboard/market-data",        # ← FIXED: Added missing endpoint
+            "/api/dashboard/export-csv",         # ← FIXED: Added missing endpoint
+            "/api/dashboard/reset-parameters"    # ← FIXED: Added missing endpoint
         ]
     }
 
-# ← ENHANCED: CORS test endpoint
-@app.get("/cors-test")
-async def cors_test():
-    """Test endpoint for CORS verification."""
+# ← ENHANCED: Health check endpoint for monitoring
+@app.get("/health")
+async def health_check():
+    """Health check endpoint for monitoring services."""
     return {
-        "message": "CORS is working correctly",
-        "allowed_origins": origins,
+        "status": "healthy",
+        "services": {
+            "data_feed": data_feed_manager.get_current_price() > 0,
+            "revenue_engine": revenue_engine is not None,
+            "liquidity_manager": liquidity_manager is not None,
+            "bot_trader": bot_trader_simulator is not None,
+            "hedge_manager": hedge_feed_manager is not None
+        },
         "timestamp": time.time()
+    }
+
+# ← ENHANCED: Dynamic endpoint discovery (alternative approach)
+@app.get("/endpoints")
+async def list_endpoints():
+    """Dynamic endpoint discovery for development."""
+    routes = []
+    for route in app.routes:
+        if hasattr(route, 'path') and hasattr(route, 'methods'):
+            routes.append({
+                "path": route.path,
+                "methods": list(route.methods),
+                "name": getattr(route, 'name', 'unnamed')
+            })
+    
+    # Get dashboard-specific routes
+    dashboard_routes = []
+    for route in dashboard_router.routes:
+        if hasattr(route, 'path'):
+            dashboard_routes.append(f"/api/dashboard{route.path}")
+    
+    return {
+        "total_routes": len(routes),
+        "dashboard_routes": sorted(dashboard_routes),
+        "all_routes": routes
     }
 
 if __name__ == "__main__":
