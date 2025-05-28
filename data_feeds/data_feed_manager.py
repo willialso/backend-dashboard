@@ -9,9 +9,9 @@ from backend import config
 from backend.utils import setup_logger
 
 # Import the WebSocket clients and their global price info
-from backend.coinbase_client import start_coinbase_ws, coinbase_btc_price_info
-from backend.kraken_client import start_kraken_ws, kraken_btc_price_info
-from backend.okx_client import start_okx_ws, okx_btc_price_info
+from data_feeds.coinbase_client import start_coinbase_ws, coinbase_btc_price_info
+from data_feeds.kraken_client import start_kraken_ws, kraken_btc_price_info
+from data_feeds.okx_client import start_okx_ws, okx_btc_price_info
 
 logger = setup_logger(__name__)
 

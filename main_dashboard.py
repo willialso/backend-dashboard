@@ -8,12 +8,14 @@ import json
 import threading
 import time
 
-from core.config import *
+from backend.config import *
 from data_feeds.data_feed_manager import DataFeedManager
 from investor_dashboard.dashboard_api import router as dashboard_router
 from investor_dashboard.revenue_engine import RevenueEngine
 from investor_dashboard.liquidity_manager import LiquidityManager
 from investor_dashboard.bot_trader_simulator import BotTraderSimulator
+from investor_dashboard.audit_engine import AuditEngine
+from investor_dashboard.hedge_feed_manager import HedgeFeedManager
 
 app = FastAPI(title="Atticus Investor Dashboard", version="1.0.0")
 
@@ -31,6 +33,16 @@ data_feed_manager = DataFeedManager()
 revenue_engine = RevenueEngine()
 liquidity_manager = LiquidityManager()
 bot_trader_simulator = BotTraderSimulator()
+audit_engine = AuditEngine()
+hedge_feed_manager = HedgeFeedManager()
+
+# ← FIX: Initialize dashboard API globals
+from investor_dashboard import dashboard_api
+dashboard_api.revenue_engine = revenue_engine
+dashboard_api.liquidity_manager = liquidity_manager
+dashboard_api.bot_trader_simulator = bot_trader_simulator
+dashboard_api.audit_engine = audit_engine
+dashboard_api.hedge_feed_manager = hedge_feed_manager
 
 # WebSocket connections for dashboard
 dashboard_connections = set()
@@ -46,6 +58,9 @@ async def startup_event():
     # Start bot trader simulation
     bot_trader_simulator.start()
     
+    # Start hedge feed manager
+    hedge_feed_manager.start()
+    
     # Start background dashboard updates
     threading.Thread(target=dashboard_update_loop, daemon=True).start()
     
@@ -60,17 +75,30 @@ async def dashboard_websocket(websocket: WebSocket):
     try:
         while True:
             # Send dashboard updates every 2 seconds
-            dashboard_data = {
-                "type": "dashboard_update",
-                "data": {
-                    "current_price": data_feed_manager.get_current_price(),
-                    "revenue_metrics": revenue_engine.get_current_metrics(),
-                    "liquidity_status": liquidity_manager.get_status(),
-                    "bot_activity": bot_trader_simulator.get_current_activity(),
-                    "timestamp": time.time()
+            try:
+                dashboard_data = {
+                    "type": "dashboard_update",
+                    "data": {
+                        "current_price": data_feed_manager.get_current_price(),
+                        "revenue_metrics": revenue_engine.get_current_metrics().__dict__,
+                        "liquidity_status": liquidity_manager.get_status().__dict__,
+                        "bot_activity": [activity.__dict__ for activity in bot_trader_simulator.get_current_activity()],
+                        "timestamp": time.time()
+                    }
                 }
-            }
-            await websocket.send_text(json.dumps(dashboard_data))
+                await websocket.send_text(json.dumps(dashboard_data, default=str))
+            except Exception as e:
+                print(f"WebSocket data error: {e}")
+                # Send basic update if full data fails
+                basic_data = {
+                    "type": "dashboard_update",
+                    "data": {
+                        "current_price": data_feed_manager.get_current_price(),
+                        "timestamp": time.time()
+                    }
+                }
+                await websocket.send_text(json.dumps(basic_data))
+            
             await asyncio.sleep(2)
             
     except WebSocketDisconnect:
@@ -87,6 +115,9 @@ def dashboard_update_loop():
                 
             # Update bot trading simulation
             bot_trader_simulator.process_trades(current_price)
+            
+            # Update hedge feed manager
+            hedge_feed_manager.update_btc_price(current_price)
             
             # Update liquidity calculations
             liquidity_manager.update_metrics()

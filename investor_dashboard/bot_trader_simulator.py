@@ -6,6 +6,7 @@ import threading
 from dataclasses import dataclass
 from typing import Dict, List
 from enum import Enum
+import numpy as np  # ← FIX: Add numpy import for poisson distribution
 
 class TraderType(Enum):
     ADVANCED = "Advanced"
@@ -105,53 +106,63 @@ class BotTraderSimulator:
         # Average trades per minute across all traders of this type
         avg_trades_per_minute = (trades_per_hour * active_traders) / 60
         
-        # Add some randomness
-        return max(0, int(random.poisson(avg_trades_per_minute)))
+        # ← FIX: Use numpy for poisson distribution
+        try:
+            return max(0, int(np.random.poisson(avg_trades_per_minute)))
+        except Exception as e:
+            # Fallback to normal distribution if numpy fails
+            print(f"Poisson fallback: {e}")
+            return max(0, int(random.normalvariate(avg_trades_per_minute, avg_trades_per_minute * 0.3)))
     
     def _generate_trade(self, trader_type: TraderType, profile: Dict) -> BotTrade:
         """Generate a realistic trade for a trader type."""
         if self.current_btc_price == 0:
             return None
             
-        # Choose option type (slightly favor calls in crypto)
-        option_type = random.choices(["call", "put"], weights=[0.6, 0.4])[0]
-        
-        # Choose expiry based on trader preferences
-        expiry_minutes = random.choice(profile["preferred_expiries"])
-        
-        # Choose strike based on risk tolerance
-        risk_tolerance = profile["risk_tolerance"]
-        if option_type == "call":
-            # OTM calls (above current price)
-            strike_multiplier = 1 + random.uniform(0.01, risk_tolerance)
-        else:
-            # OTM puts (below current price)
-            strike_multiplier = 1 - random.uniform(0.01, risk_tolerance)
+        try:
+            # Choose option type (slightly favor calls in crypto)
+            option_type = random.choices(["call", "put"], weights=[0.6, 0.4])[0]
             
-        strike = round(self.current_btc_price * strike_multiplier, -1)  # Round to $10
-        
-        # Estimate premium (simplified)
-        moneyness = abs(strike - self.current_btc_price) / self.current_btc_price
-        time_value = expiry_minutes / 480  # Normalize to 8-hour max
-        estimated_premium = self.current_btc_price * 0.1 * (0.03 + moneyness + time_value * 0.02)
-        
-        # Add trader-specific variations
-        trade_size_variation = random.uniform(0.7, 1.3)
-        premium_paid = estimated_premium * trade_size_variation
-        
-        return BotTrade(
-            trader_type=trader_type,
-            option_type=option_type,
-            strike=strike,
-            expiry_minutes=expiry_minutes,
-            premium_paid=premium_paid,
-            timestamp=time.time(),
-            trader_id=f"{trader_type.value}_{random.randint(1000, 9999)}"
-        )
+            # Choose expiry based on trader preferences
+            expiry_minutes = random.choice(profile["preferred_expiries"])
+            
+            # Choose strike based on risk tolerance
+            risk_tolerance = profile["risk_tolerance"]
+            if option_type == "call":
+                # OTM calls (above current price)
+                strike_multiplier = 1 + random.uniform(0.01, risk_tolerance)
+            else:
+                # OTM puts (below current price)
+                strike_multiplier = 1 - random.uniform(0.01, risk_tolerance)
+                
+            strike = round(self.current_btc_price * strike_multiplier, -1)  # Round to $10
+            
+            # Estimate premium (simplified)
+            moneyness = abs(strike - self.current_btc_price) / self.current_btc_price
+            time_value = expiry_minutes / 480  # Normalize to 8-hour max
+            estimated_premium = self.current_btc_price * 0.1 * (0.03 + moneyness + time_value * 0.02)
+            
+            # Add trader-specific variations
+            trade_size_variation = random.uniform(0.7, 1.3)
+            premium_paid = estimated_premium * trade_size_variation
+            
+            return BotTrade(
+                trader_type=trader_type,
+                option_type=option_type,
+                strike=strike,
+                expiry_minutes=expiry_minutes,
+                premium_paid=premium_paid,
+                timestamp=time.time(),
+                trader_id=f"{trader_type.value}_{random.randint(1000, 9999)}"
+            )
+        except Exception as e:
+            print(f"Trade generation error: {e}")
+            return None
     
     def process_trades(self, current_btc_price: float):
         """Process trades with current BTC price."""
-        self.current_btc_price = current_btc_price
+        if current_btc_price > 0:
+            self.current_btc_price = current_btc_price
     
     def get_current_activity(self) -> List[TraderActivity]:
         """Get current trader activity summary."""
@@ -183,6 +194,9 @@ class BotTraderSimulator:
     
     def adjust_trader_distribution(self, advanced_pct: float, intermediate_pct: float, beginner_pct: float):
         """Adjust trader type distribution (investor controls)."""
+        if abs((advanced_pct + intermediate_pct + beginner_pct) - 100.0) > 0.1:
+            raise ValueError("Percentages must sum to 100")
+            
         total_traders = sum(profile["count"] for profile in self.trader_profiles.values())
         
         # Update counts based on new percentages
@@ -194,3 +208,36 @@ class BotTraderSimulator:
         self.trader_profiles[TraderType.ADVANCED]["percentage"] = advanced_pct
         self.trader_profiles[TraderType.INTERMEDIATE]["percentage"] = intermediate_pct
         self.trader_profiles[TraderType.BEGINNER]["percentage"] = beginner_pct
+    
+    def get_trading_statistics(self) -> Dict:
+        """Get comprehensive trading statistics."""
+        if not self.recent_trades:
+            return {
+                "total_trades": 0,
+                "total_volume_usd": 0,
+                "avg_premium_paid": 0,
+                "call_put_ratio": 0,
+                "most_popular_expiry": 0
+            }
+        
+        total_volume = sum(trade.premium_paid for trade in self.recent_trades)
+        call_trades = len([t for t in self.recent_trades if t.option_type == "call"])
+        put_trades = len([t for t in self.recent_trades if t.option_type == "put"])
+        
+        # Most popular expiry
+        expiry_counts = {}
+        for trade in self.recent_trades:
+            expiry_counts[trade.expiry_minutes] = expiry_counts.get(trade.expiry_minutes, 0) + 1
+        most_popular_expiry = max(expiry_counts.keys()) if expiry_counts else 0
+        
+        return {
+            "total_trades": len(self.recent_trades),
+            "total_volume_usd": total_volume,
+            "avg_premium_paid": total_volume / len(self.recent_trades) if self.recent_trades else 0,
+            "call_put_ratio": call_trades / put_trades if put_trades > 0 else float('inf'),
+            "most_popular_expiry": most_popular_expiry
+        }
+
+    def stop(self):
+        """Stop the bot trading simulation."""
+        self.is_running = False
