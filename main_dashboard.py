@@ -19,7 +19,7 @@ from investor_dashboard.hedge_feed_manager import HedgeFeedManager
 
 app = FastAPI(title="Atticus Investor Dashboard", version="1.0.0")
 
-# ← ENHANCED CORS CONFIGURATION FOR LOVABLE INTEGRATION
+# ← BULLETPROOF CORS CONFIGURATION (Based on search results best practices)
 origins = [
     # Local development
     "http://localhost:3000",
@@ -27,29 +27,26 @@ origins = [
     "http://127.0.0.1:3000",
     "http://127.0.0.1:8080",
     
-    # Lovable domains (CRITICAL for frontend integration)
+    # Lovable domains (CRITICAL - exact match from your error)
     "https://preview--atticusq-live-view.lovable.app",
     "https://atticusq-live-view.lovable.app",
-    "https://preview--*.lovable.app",
-    "https://*.lovable.app",
     
-    # Your Render deployment
+    # Your Render deployment  
     "https://atticus-demo-dashboard.onrender.com",
-    "https://*.onrender.com",
     
-    # Development domains
+    # Additional safety origins
     "http://localhost",
     "https://localhost",
 ]
 
+# ← ENHANCED CORS (Following FastAPI best practices from search results)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,
-    allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "HEAD", "PATCH"],
-    allow_headers=["*"],
-    expose_headers=["*"],
-    max_age=3600,  # Cache preflight requests for 1 hour
+    allow_origins=origins,                    # Specific origins (not "*" for security)
+    allow_credentials=True,                   # Enable credentials
+    allow_methods=["*"],                      # All HTTP methods
+    allow_headers=["*"],                      # All headers
+    expose_headers=["*"],                     # Expose all headers
 )
 
 # Global instances
@@ -60,7 +57,7 @@ bot_trader_simulator = BotTraderSimulator()
 audit_engine = AuditEngine()
 hedge_feed_manager = HedgeFeedManager()
 
-# ← FIX: Initialize dashboard API globals
+# ← CRITICAL: Initialize dashboard API globals  
 from investor_dashboard import dashboard_api
 dashboard_api.revenue_engine = revenue_engine
 dashboard_api.liquidity_manager = liquidity_manager
@@ -75,6 +72,7 @@ dashboard_connections = set()
 async def startup_event():
     """Initialize dashboard backend services."""
     print("🚀 Starting Atticus Investor Dashboard Backend...")
+    print(f"🌐 CORS enabled for origins: {origins}")
     
     # Start data feeds
     data_feed_manager.start()
@@ -89,7 +87,6 @@ async def startup_event():
     threading.Thread(target=dashboard_update_loop, daemon=True).start()
     
     print("✅ Dashboard backend ready for investor connections")
-    print("🌐 CORS configured for Lovable frontend integration")
 
 @app.websocket("/ws/dashboard")
 async def dashboard_websocket(websocket: WebSocket):
@@ -161,6 +158,7 @@ async def root():
         "status": "running",
         "version": "1.0.0",
         "cors_configured": True,
+        "cors_origins": origins,
         "api_endpoints": [
             "/api/dashboard/revenue-metrics",
             "/api/dashboard/liquidity-status",
@@ -173,19 +171,13 @@ async def root():
         ]
     }
 
-# ← ENHANCED: Health check endpoint for monitoring
-@app.get("/health")
-async def health_check():
-    """Health check endpoint for monitoring services."""
+# ← ENHANCED: CORS test endpoint
+@app.get("/cors-test")
+async def cors_test():
+    """Test endpoint for CORS verification."""
     return {
-        "status": "healthy",
-        "services": {
-            "data_feed": data_feed_manager.get_current_price() > 0,
-            "revenue_engine": revenue_engine is not None,
-            "liquidity_manager": liquidity_manager is not None,
-            "bot_trader": bot_trader_simulator is not None,
-            "hedge_manager": hedge_feed_manager is not None
-        },
+        "message": "CORS is working correctly",
+        "allowed_origins": origins,
         "timestamp": time.time()
     }
 
