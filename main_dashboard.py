@@ -19,13 +19,37 @@ from investor_dashboard.hedge_feed_manager import HedgeFeedManager
 
 app = FastAPI(title="Atticus Investor Dashboard", version="1.0.0")
 
-# CORS setup
+# ← ENHANCED CORS CONFIGURATION FOR LOVABLE INTEGRATION
+origins = [
+    # Local development
+    "http://localhost:3000",
+    "http://localhost:8080",
+    "http://127.0.0.1:3000",
+    "http://127.0.0.1:8080",
+    
+    # Lovable domains (CRITICAL for frontend integration)
+    "https://preview--atticusq-live-view.lovable.app",
+    "https://atticusq-live-view.lovable.app",
+    "https://preview--*.lovable.app",
+    "https://*.lovable.app",
+    
+    # Your Render deployment
+    "https://atticus-demo-dashboard.onrender.com",
+    "https://*.onrender.com",
+    
+    # Development domains
+    "http://localhost",
+    "https://localhost",
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=CORS_ORIGINS,
+    allow_origins=origins,
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "HEAD", "PATCH"],
     allow_headers=["*"],
+    expose_headers=["*"],
+    max_age=3600,  # Cache preflight requests for 1 hour
 )
 
 # Global instances
@@ -65,6 +89,7 @@ async def startup_event():
     threading.Thread(target=dashboard_update_loop, daemon=True).start()
     
     print("✅ Dashboard backend ready for investor connections")
+    print("🌐 CORS configured for Lovable frontend integration")
 
 @app.websocket("/ws/dashboard")
 async def dashboard_websocket(websocket: WebSocket):
@@ -100,7 +125,6 @@ async def dashboard_websocket(websocket: WebSocket):
                 await websocket.send_text(json.dumps(basic_data))
             
             await asyncio.sleep(2)
-            
     except WebSocketDisconnect:
         dashboard_connections.remove(websocket)
 
@@ -112,7 +136,7 @@ def dashboard_update_loop():
             current_price = data_feed_manager.get_current_price()
             if current_price > 0:
                 revenue_engine.update_price(current_price)
-                
+            
             # Update bot trading simulation
             bot_trader_simulator.process_trades(current_price)
             
@@ -132,7 +156,38 @@ app.include_router(dashboard_router, prefix="/api/dashboard")
 
 @app.get("/")
 async def root():
-    return {"message": "Atticus Investor Dashboard Backend", "status": "running"}
+    return {
+        "message": "Atticus Investor Dashboard Backend", 
+        "status": "running",
+        "version": "1.0.0",
+        "cors_configured": True,
+        "api_endpoints": [
+            "/api/dashboard/revenue-metrics",
+            "/api/dashboard/liquidity-status",
+            "/api/dashboard/platform-health",
+            "/api/dashboard/bot-trader-activity",
+            "/api/dashboard/hedge-execution-feed",
+            "/api/dashboard/audit-summary",
+            "/api/dashboard/recent-trades",
+            "/api/dashboard/hedge-metrics"
+        ]
+    }
+
+# ← ENHANCED: Health check endpoint for monitoring
+@app.get("/health")
+async def health_check():
+    """Health check endpoint for monitoring services."""
+    return {
+        "status": "healthy",
+        "services": {
+            "data_feed": data_feed_manager.get_current_price() > 0,
+            "revenue_engine": revenue_engine is not None,
+            "liquidity_manager": liquidity_manager is not None,
+            "bot_trader": bot_trader_simulator is not None,
+            "hedge_manager": hedge_feed_manager is not None
+        },
+        "timestamp": time.time()
+    }
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8001)
