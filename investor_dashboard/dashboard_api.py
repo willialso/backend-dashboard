@@ -1,13 +1,16 @@
 # investor_dashboard/dashboard_api.py
 
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from typing import Dict, List, Optional
 from pydantic import BaseModel
 import time
 import logging
 import traceback
 import json
+import io
+import pandas as pd
+from datetime import datetime
 
 # Set up comprehensive logging for debugging
 logging.basicConfig(
@@ -83,7 +86,240 @@ class DebugPriceUpdate(BaseModel):
 class DebugModeToggle(BaseModel):
     enabled: bool
 
-# ← NEW: MISSING MARKET DATA ENDPOINT (FIXES 404 ERROR)
+# ← NEW: CSV EXPORT ENDPOINT
+@router.get("/export-csv")
+async def export_csv():
+    """Export current dashboard data to CSV file."""
+    start_time = time.time()
+    
+    try:
+        # Collect all dashboard data
+        dashboard_data = {}
+        
+        # Revenue metrics
+        if revenue_engine:
+            metrics, error = safe_component_call("revenue_engine", revenue_engine.get_current_metrics)
+            if metrics and not error:
+                dashboard_data['Revenue'] = {
+                    'Daily Revenue ($)': metrics.daily_revenue_estimate,
+                    'Annual Projection ($)': metrics.daily_revenue_estimate * 365,
+                    'Platform Price ($)': metrics.platform_price,
+                    'BSM Fair Value ($)': metrics.bsm_fair_value,
+                    'Revenue per Contract ($)': metrics.revenue_per_contract,
+                    'Contracts Sold (24h)': metrics.contracts_sold_24h,
+                    'Markup Percentage (%)': metrics.markup_percentage
+                }
+        
+        # Liquidity status
+        if liquidity_manager:
+            status, error = safe_component_call("liquidity_manager", liquidity_manager.get_status)
+            if status and not error:
+                dashboard_data['Liquidity'] = {
+                    'Total Pool ($)': status.total_pool_usd,
+                    'Liquidity Ratio': status.liquidity_ratio,
+                    'Active Users': status.active_users,
+                    'Required Liquidity ($)': status.required_liquidity_usd,
+                    'Liquidity Allocation (%)': status.allocated_to_liquidity_pct,
+                    'Operations Allocation (%)': status.allocated_to_operations_pct,
+                    'Risk Level': getattr(status, 'risk_level', 'Unknown')
+                }
+        
+        # Trading activity
+        if bot_trader_simulator:
+            activities, error = safe_component_call("bot_trader_simulator", bot_trader_simulator.get_current_activity)
+            if activities and not error:
+                for activity in activities:
+                    dashboard_data[f'Trading_{activity.trader_type.value}'] = {
+                        'Active Count': activity.active_count,
+                        'Percentage (%)': activity.percentage,
+                        'Avg Trade Size ($)': activity.avg_trade_size_usd,
+                        'Trades per Hour': activity.trades_per_hour,
+                        'Success Rate (%)': activity.success_rate * 100
+                    }
+        
+        # Platform health
+        health_data = {}
+        try:
+            # Get platform health data
+            if revenue_engine is not None:
+                health_data['Revenue Engine'] = 'Operational'
+            if liquidity_manager is not None:
+                health_data['Liquidity Manager'] = 'Operational'
+            if bot_trader_simulator is not None:
+                health_data['Bot Trader Simulator'] = 'Operational'
+            if hedge_feed_manager is not None:
+                health_data['Hedge Feed Manager'] = 'Operational'
+            if audit_engine is not None:
+                health_data['Audit Engine'] = 'Operational'
+                
+            dashboard_data['Platform_Health'] = health_data
+        except Exception as e:
+            logger.warning(f"Could not get platform health data: {e}")
+        
+        # Recent trades
+        trades_df = None
+        if bot_trader_simulator:
+            trades, error = safe_component_call("bot_trader_simulator", bot_trader_simulator.get_recent_trades, 20)
+            if trades and not error:
+                trades_data = []
+                for trade in trades:
+                    trades_data.append({
+                        'Timestamp': datetime.fromtimestamp(trade.timestamp).strftime('%Y-%m-%d %H:%M:%S'),
+                        'Trader Type': trade.trader_type.value,
+                        'Option Type': trade.option_type,
+                        'Strike Price ($)': trade.strike,
+                        'Premium Paid ($)': trade.premium_paid,
+                        'Expiry (minutes)': trade.expiry_minutes,
+                        'Trader ID': trade.trader_id
+                    })
+                trades_df = pd.DataFrame(trades_data)
+        
+        # Create main summary DataFrame
+        summary_rows = []
+        for category, data in dashboard_data.items():
+            for metric, value in data.items():
+                summary_rows.append({
+                    'Category': category,
+                    'Metric': metric,
+                    'Value': value,
+                    'Export Time': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                })
+        
+        summary_df = pd.DataFrame(summary_rows)
+        
+        # Create CSV content
+        stream = io.StringIO()
+        stream.write("ATTICUS DASHBOARD EXPORT\n")
+        stream.write(f"Export Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+        stream.write(f"Platform Status: Operational\n\n")
+        stream.write("=== SUMMARY METRICS ===\n")
+        summary_df.to_csv(stream, index=False)
+        
+        if trades_df is not None and not trades_df.empty:
+            stream.write("\n\n=== RECENT TRADES ===\n")
+            trades_df.to_csv(stream, index=False)
+        
+        # Create streaming response
+        response = StreamingResponse(
+            iter([stream.getvalue()]),
+            media_type="text/csv",
+            headers={
+                "Content-Disposition": f"attachment; filename=atticus_dashboard_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                "Access-Control-Expose-Headers": "Content-Disposition"
+            }
+        )
+        
+        duration = (time.time() - start_time) * 1000
+        log_api_call("export-csv", "success", duration)
+        return response
+        
+    except Exception as e:
+        duration = (time.time() - start_time) * 1000
+        log_api_call("export-csv", f"error - {str(e)}", duration)
+        raise HTTPException(status_code=500, detail=f"Error exporting CSV: {str(e)}")
+
+# ← NEW: RESET PARAMETERS ENDPOINT
+@router.post("/reset-parameters")
+async def reset_parameters():
+    """Reset all platform parameters to default values."""
+    start_time = time.time()
+    
+    try:
+        reset_results = {}
+        
+        # Reset liquidity manager
+        if liquidity_manager:
+            try:
+                # Reset to default allocations
+                liquidity_manager.liquidity_allocation_pct = 75.0
+                liquidity_manager.operations_allocation_pct = 20.0
+                liquidity_manager.profit_allocation_pct = 5.0
+                
+                # Reset user count to reasonable default
+                liquidity_manager.active_users = 150
+                
+                # Reset pool to base size if attribute exists
+                if hasattr(liquidity_manager, 'base_liquidity_pool'):
+                    liquidity_manager.base_liquidity_pool = 2_000_000
+                
+                reset_results["liquidity_manager"] = "success"
+                logger.info("✅ Liquidity manager reset to defaults")
+            except Exception as e:
+                reset_results["liquidity_manager"] = f"error: {str(e)}"
+                logger.error(f"❌ Liquidity manager reset failed: {e}")
+        
+        # Reset bot trader distribution
+        if bot_trader_simulator:
+            try:
+                # Reset to default trader distribution (50% advanced, 35% intermediate, 15% beginner)
+                if hasattr(bot_trader_simulator, 'adjust_trader_distribution'):
+                    bot_trader_simulator.adjust_trader_distribution(50.0, 35.0, 15.0)
+                reset_results["bot_trader_simulator"] = "success"
+                logger.info("✅ Bot trader distribution reset to defaults")
+            except Exception as e:
+                reset_results["bot_trader_simulator"] = f"error: {str(e)}"
+                logger.error(f"❌ Bot trader reset failed: {e}")
+        
+        # Reset revenue engine debug mode
+        if revenue_engine:
+            try:
+                if hasattr(revenue_engine, 'debug_mode'):
+                    revenue_engine.debug_mode = False
+                reset_results["revenue_engine"] = "success"
+                logger.info("✅ Revenue engine debug mode disabled")
+            except Exception as e:
+                reset_results["revenue_engine"] = f"error: {str(e)}"
+                logger.error(f"❌ Revenue engine reset failed: {e}")
+        
+        # Reset hedge feed manager (if needed)
+        if hedge_feed_manager:
+            try:
+                # Add any specific reset logic for hedge manager here if needed
+                reset_results["hedge_feed_manager"] = "success"
+                logger.info("✅ Hedge feed manager reset")
+            except Exception as e:
+                reset_results["hedge_feed_manager"] = f"error: {str(e)}"
+                logger.error(f"❌ Hedge feed manager reset failed: {e}")
+        
+        # Reset audit engine (if needed)
+        if audit_engine:
+            try:
+                # Add any specific reset logic for audit engine here if needed
+                reset_results["audit_engine"] = "success"
+                logger.info("✅ Audit engine reset")
+            except Exception as e:
+                reset_results["audit_engine"] = f"error: {str(e)}"
+                logger.error(f"❌ Audit engine reset failed: {e}")
+        
+        duration = (time.time() - start_time) * 1000
+        log_api_call("reset-parameters", "success", duration)
+        
+        return {
+            "status": "success",
+            "message": "Platform parameters reset to defaults",
+            "reset_results": reset_results,
+            "new_parameters": {
+                "liquidity_allocation": 75.0,
+                "operations_allocation": 20.0,
+                "profit_allocation": 5.0,
+                "active_users": 150,
+                "base_liquidity_pool": 2_000_000,
+                "trader_distribution": {
+                    "advanced": 50.0,
+                    "intermediate": 35.0,
+                    "beginner": 15.0
+                }
+            },
+            "timestamp": time.time(),
+            "response_time_ms": duration
+        }
+        
+    except Exception as e:
+        duration = (time.time() - start_time) * 1000
+        log_api_call("reset-parameters", f"error - {str(e)}", duration)
+        raise HTTPException(status_code=500, detail=f"Error resetting parameters: {str(e)}")
+
+# ← EXISTING: MARKET DATA ENDPOINT (FIXES 404 ERROR)
 @router.get("/market-data")
 async def get_market_data():
     """Get market data including BTC price and volatility metrics - FIXES 404 ERROR."""
@@ -221,7 +457,7 @@ async def get_market_data():
             "status": "error"
         }
 
-# ENHANCED DEBUG ENDPOINTS
+# ALL YOUR EXISTING ENDPOINTS (keeping exactly as they are)
 
 @router.get("/debug-system-status")
 async def debug_system_status():

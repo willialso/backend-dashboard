@@ -1,5 +1,10 @@
+# Core FastAPI and Web Framework
 fastapi==0.104.1
-uvicorn==0.24.0
+uvicorn[standard]==0.24.0
+pydantic==2.5.0
+python-multipart==0.0.6
+
+# Your Current Working Stack
 pandas==2.1.0
 numpy==1.26.0
 scipy==1.11.4
@@ -8,4 +13,31 @@ scikit-learn==1.4.0
 websockets==11.0.3
 websocket-client==1.6.4
 requests==2.31.0
-python-multipart==0.0.6
+
+# Financial Libraries (Compatible versions)
+QuantLib>=1.17
+yfinance==0.2.18
+ta==0.10.2
+
+# Date and Time
+python-dateutil==2.8.2
+pytz==2023.3
+
+# Production Essentials
+python-dotenv==1.0.0
+structlog==23.2.0
+
+# Optional: Advanced Analytics (if needed)
+statsmodels==0.14.0
+arch==6.2.0
+
+# Development and Testing
+pytest==7.4.3
+pytest-asyncio==0.21.1
+
+# Security
+cryptography==41.0.7
+
+# Utilities
+click==8.1.7
+rich==13.7.0
