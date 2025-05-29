@@ -19,7 +19,7 @@ from investor_dashboard.hedge_feed_manager import HedgeFeedManager
 
 app = FastAPI(title="Atticus Investor Dashboard", version="1.0.0")
 
-# ← FIXED CORS CONFIGURATION FOR NEW LOVABLE DASHBOARD
+# ← CRITICAL FIX: Correct Lovable Domain from Error Analysis
 origins = [
     # Local development
     "http://localhost:3000",
@@ -27,11 +27,14 @@ origins = [
     "http://127.0.0.1:3000",
     "http://127.0.0.1:8080",
     
-    # NEW Lovable dashboard domains (CRITICAL FIX)
-    "https://preview--atticus-trading-insights-dashboard.lovable.app",  # ← NEW URL FROM ERROR
-    "https://atticus-trading-insights-dashboard.lovable.app",           # ← PRODUCTION URL
+    # CORRECT Lovable domain (from Lovable's CORS analysis)
+    "https://a2c07ffc-98d1-4723-a7e3-3e7cbd07aa30.lovableproject.com",  # ← CRITICAL FIX
     
-    # Old Lovable domains (keep for compatibility)
+    # General Lovable support (for future projects)
+    "https://preview--atticus-trading-insights-dashboard.lovable.app",
+    "https://atticus-trading-insights-dashboard.lovable.app",
+    
+    # Old domains (keep for compatibility)
     "https://preview--atticusq-live-view.lovable.app",
     "https://atticusq-live-view.lovable.app",
     
@@ -50,7 +53,7 @@ app.add_middleware(
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "HEAD", "PATCH"],
     allow_headers=["*"],
     expose_headers=["*"],
-    max_age=3600,  # Cache preflight requests for 1 hour
+    max_age=86400,  # 24 hour cache as suggested by Lovable
 )
 
 # Global instances
@@ -77,6 +80,7 @@ async def startup_event():
     """Initialize dashboard backend services."""
     print("🚀 Starting Atticus Investor Dashboard Backend...")
     print(f"🌐 CORS enabled for origins: {origins}")
+    print("🔗 Ready for Lovable dashboard integration")
     
     # Start data feeds
     data_feed_manager.start()
@@ -155,7 +159,6 @@ def dashboard_update_loop():
 # Include dashboard API routes
 app.include_router(dashboard_router, prefix="/api/dashboard")
 
-# ← FIXED: Complete endpoint list with all 11 endpoints
 @app.get("/")
 async def root():
     return {
@@ -163,7 +166,8 @@ async def root():
         "status": "running",
         "version": "1.0.0",
         "cors_configured": True,
-        "cors_origins": origins,
+        "cors_origins": len(origins),  # Don't expose full list for security
+        "lovable_integration": "ready",
         "api_endpoints": [
             "/api/dashboard/revenue-metrics",
             "/api/dashboard/liquidity-status",
@@ -173,13 +177,24 @@ async def root():
             "/api/dashboard/audit-summary",
             "/api/dashboard/recent-trades",
             "/api/dashboard/hedge-metrics",
-            "/api/dashboard/market-data",        # ← FIXED: Added missing endpoint
-            "/api/dashboard/export-csv",         # ← FIXED: Added missing endpoint
-            "/api/dashboard/reset-parameters"    # ← FIXED: Added missing endpoint
+            "/api/dashboard/market-data",
+            "/api/dashboard/export-csv",
+            "/api/dashboard/reset-parameters"
         ]
     }
 
-# ← ENHANCED: Health check endpoint for monitoring
+# ← ENHANCED: CORS test endpoint for Lovable debugging
+@app.get("/cors-test")
+async def cors_test():
+    """Test endpoint for CORS verification from Lovable."""
+    return {
+        "message": "CORS is working correctly",
+        "timestamp": time.time(),
+        "server": "Render.com",
+        "cors_configured": True,
+        "lovable_ready": True
+    }
+
 @app.get("/health")
 async def health_check():
     """Health check endpoint for monitoring services."""
@@ -193,31 +208,6 @@ async def health_check():
             "hedge_manager": hedge_feed_manager is not None
         },
         "timestamp": time.time()
-    }
-
-# ← ENHANCED: Dynamic endpoint discovery (alternative approach)
-@app.get("/endpoints")
-async def list_endpoints():
-    """Dynamic endpoint discovery for development."""
-    routes = []
-    for route in app.routes:
-        if hasattr(route, 'path') and hasattr(route, 'methods'):
-            routes.append({
-                "path": route.path,
-                "methods": list(route.methods),
-                "name": getattr(route, 'name', 'unnamed')
-            })
-    
-    # Get dashboard-specific routes
-    dashboard_routes = []
-    for route in dashboard_router.routes:
-        if hasattr(route, 'path'):
-            dashboard_routes.append(f"/api/dashboard{route.path}")
-    
-    return {
-        "total_routes": len(routes),
-        "dashboard_routes": sorted(dashboard_routes),
-        "all_routes": routes
     }
 
 if __name__ == "__main__":
