@@ -3,238 +3,218 @@
 import time
 import random
 import threading
-from dataclasses import dataclass
-from typing import List, Dict
+from dataclasses import dataclass, field
+from typing import List, Dict, Optional, Any
 from enum import Enum
+import logging
+from collections import defaultdict
 
-class HedgeType(Enum):
-    DELTA_HEDGE = "Delta Hedge"
-    RL_HEDGE = "RL Hedge"
-    PORTFOLIO_REBALANCE = "Portfolio Rebal"
-    GAMMA_HEDGE = "Gamma Hedge"
-    VEGA_HEDGE = "Vega Hedge"
+# from .position_manager import PositionManager # For type hinting
+# from .audit_engine import AuditEngine     # For type hinting
+from backend import config
+
+logger = logging.getLogger(__name__)
+
+class HedgeType(Enum): # Using your config.py version would be better if it defines these
+    DELTA_HEDGE = "Delta Hedge"; RL_HEDGE = "RL Hedge"; PORTFOLIO_REBALANCE = "Portfolio Rebalance"
+    GAMMA_HEDGE = "Gamma Hedge"; VEGA_HEDGE = "Vega Hedge"; LIQUIDITY_PROVISION = "Liquidity Provision Hedge"
 
 class Exchange(Enum):
-    COINBASE_PRO = "CB Pro"
-    KRAKEN = "Kraken"
-    OKX = "OKX"
+    COINBASE_PRO = config.get_config_value("EXCHANGE_NAME_COINBASE_PRO", "Coinbase Pro")
+    KRAKEN = config.get_config_value("EXCHANGE_NAME_KRAKEN", "Kraken")
+    OKX = config.get_config_value("EXCHANGE_NAME_OKX", "OKX")
+    DERIBIT = config.get_config_value("EXCHANGE_NAME_DERIBIT", "Deribit")
+    # SIMULATED_INTERNAL = "Simulated Internal" # Not in your example config
 
 @dataclass
-class HedgeExecution:
-    timestamp: float
-    hedge_type: HedgeType
-    side: str  # "Buy" or "Sell"
-    quantity_btc: float
-    price_usd: float
-    exchange: Exchange
-    cost_usd: float
-    reasoning: str
-    execution_time_ms: float
+class EnrichedHedgeExecution:
+    timestamp: float; hedge_id: str; hedge_type: HedgeType; side: str 
+    instrument: str; quantity: float; price_usd: float; exchange: Exchange
+    cost_usd: float; reasoning: str; execution_time_ms: float
+    delta_before_hedge_btc: Optional[float] = None
+    delta_impact_of_hedge_btc: Optional[float] = None
+    delta_after_hedge_btc: Optional[float] = None
+    estimated_pnl_usd: Optional[float] = field(default=0.0) # PNL of THIS hedge transaction/position
 
 class HedgeFeedManager:
-    """Manages real-time hedge execution feed for dashboard."""
-    
-    def __init__(self):
-        self.recent_hedges = []
+    def __init__(self,
+                 position_manager_instance: Optional[Any] = None, # PositionManager
+                 audit_engine_instance: Optional[Any] = None):    # AuditEngine
+        logger.info("🔧 Initializing HedgeFeedManager...")
+        self.recent_hedges_log: List[EnrichedHedgeExecution] = []
         self.is_running = False
-        self.current_btc_price = 108000
-        self.total_hedge_cost_24h = 0.0
-        self.hedge_count_24h = 0
+        self.current_btc_price: float = 0.0
+        self.hedge_id_counter = int(time.time())
         
-        # Exchange routing preferences
-        self.exchange_weights = {
-            Exchange.COINBASE_PRO: 0.5,  # 50% - primary liquidity
-            Exchange.KRAKEN: 0.3,        # 30% - backup
-            Exchange.OKX: 0.2            # 20% - arbitrage
+        self.position_manager = position_manager_instance
+        self.audit_engine = audit_engine_instance
+
+        self.exchange_weights = { # From your config.py structure for weights
+            Exchange.COINBASE_PRO: config.HEDGE_EXCHANGE_WEIGHT_CBPRO if hasattr(config, 'HEDGE_EXCHANGE_WEIGHT_CBPRO') else 0.4,
+            Exchange.KRAKEN: config.HEDGE_EXCHANGE_WEIGHT_KRAKEN if hasattr(config, 'HEDGE_EXCHANGE_WEIGHT_KRAKEN') else 0.25,
+            Exchange.OKX: config.HEDGE_EXCHANGE_WEIGHT_OKX if hasattr(config, 'HEDGE_EXCHANGE_WEIGHT_OKX') else 0.20,
+            Exchange.DERIBIT: config.HEDGE_EXCHANGE_WEIGHT_DERIBIT if hasattr(config, 'HEDGE_EXCHANGE_WEIGHT_DERIBIT') else 0.15
         }
-        
+        self._normalize_exchange_weights()
+        logger.info("✅ HedgeFeedManager initialized.")
+
+    def _normalize_exchange_weights(self):
+        total_weight = sum(self.exchange_weights.values())
+        if total_weight == 0: return
+        for exch in self.exchange_weights: self.exchange_weights[exch] /= total_weight
+            
     def start(self):
-        """Start hedge execution simulation."""
+        if not self.position_manager:
+             logger.warning("⚠️ HFM: Started WITHOUT PositionManager. Delta hedging decisions will be impaired.")
         self.is_running = True
         threading.Thread(target=self._hedge_simulation_loop, daemon=True).start()
-        
+        logger.info("🛡️ HedgeFeedManager simulation loop started.")
+
     def _hedge_simulation_loop(self):
-        """Simulate realistic hedge executions."""
         while self.is_running:
             try:
-                # Generate hedge executions based on market activity
                 if self._should_generate_hedge():
-                    hedge = self._generate_realistic_hedge()
-                    if hedge:
-                        self.recent_hedges.append(hedge)
-                        self._update_24h_metrics(hedge)
-                        
-                # Keep only last 50 hedges
-                if len(self.recent_hedges) > 50:
-                    self.recent_hedges = self.recent_hedges[-50:]
-                    
-            except Exception as e:
-                print(f"Hedge simulation error: {e}")
-                
-            # Check for hedges every 15-45 seconds
-            sleep_time = random.uniform(15, 45)
-            time.sleep(sleep_time)
-    
+                    self._generate_and_record_hedge()
+            except Exception as e: logger.error(f"HFM loop error: {e}", exc_info=True)
+            time.sleep(random.uniform(config.HEDGE_LOOP_MIN_SLEEP_SEC, config.HEDGE_LOOP_MAX_SLEEP_SEC))
+
     def _should_generate_hedge(self) -> bool:
-        """Determine if a hedge should be executed now."""
-        # Realistic hedge frequency - not every minute
-        # Based on actual option flow and delta changes
+        if not self.position_manager or self.current_btc_price <= 0:
+            return random.random() < 0.005 # Very low chance if no data
+
+        greeks = self.position_manager.get_aggregate_platform_greeks()
+        net_delta_btc = greeks.get("net_portfolio_delta_btc", 0.0)
+        threshold = self.position_manager.delta_hedge_threshold # PM gets from config
         
-        hedge_probability = 0.15  # 15% chance per check
+        if abs(net_delta_btc) > threshold:
+            logger.info(f"💡 HFM Trigger: Net Delta {net_delta_btc:.2f} BTC > Threshold +/-{threshold:.2f} BTC.")
+            return True
+        return random.random() < config.HEDGE_PROBABILISTIC_TRIGGER_PCT
+
+    def _generate_and_record_hedge(self) -> Optional[EnrichedHedgeExecution]:
+        if self.current_btc_price <= 0: return None
         
-        # Increase probability during volatile periods
-        volatility_factor = random.uniform(0.8, 1.5)
-        adjusted_probability = hedge_probability * volatility_factor
+        self.hedge_id_counter += 1
+        hedge_id = f"H{self.hedge_id_counter}"
+
+        delta_before_btc = 0.0
+        quantity_to_hedge_btc_signed = 0.0
+        hedge_type = HedgeType.DELTA_HEDGE # Default
+
+        if self.position_manager:
+            greeks = self.position_manager.get_aggregate_platform_greeks()
+            delta_before_btc = greeks.get("net_portfolio_delta_btc", 0.0)
+            threshold = self.position_manager.delta_hedge_threshold
+
+            if abs(delta_before_btc) > threshold:
+                proportion = random.uniform(config.HEDGE_DELTA_PROPORTION_MIN, config.HEDGE_DELTA_PROPORTION_MAX)
+                quantity_to_hedge_btc_signed = round(-delta_before_btc * proportion, config.HEDGE_QUANTITY_ROUNDING_DP)
+                quantity_to_hedge_btc_signed = max(min(quantity_to_hedge_btc_signed, config.HEDGE_MAX_SIZE_BTC), -config.HEDGE_MAX_SIZE_BTC)
+                if abs(quantity_to_hedge_btc_signed) < config.HEDGE_MIN_SIZE_BTC: quantity_to_hedge_btc_signed = 0.0
+            else: # Probabilistic non-delta hedge
+                if random.random() < 0.3: # Chance for other types if delta is fine
+                    hedge_type = random.choice([HedgeType.GAMMA_HEDGE, HedgeType.VEGA_HEDGE, HedgeType.PORTFOLIO_REBALANCE])
+                    quantity_to_hedge_btc_signed = round(random.uniform(config.HEDGE_MIN_SIZE_BTC, config.HEDGE_NON_DELTA_MAX_SIZE_BTC) * random.choice([-1,1]), config.HEDGE_QUANTITY_ROUNDING_DP)
+                else: return None # No hedge this cycle
+        else: # No PM, random hedge
+            quantity_to_hedge_btc_signed = round(random.uniform(config.HEDGE_MIN_SIZE_BTC, config.HEDGE_NON_DELTA_MAX_SIZE_BTC) * random.choice([-1,1]), config.HEDGE_QUANTITY_ROUNDING_DP)
+            hedge_type = random.choice(list(HedgeType))
+
+        if abs(quantity_to_hedge_btc_signed) < config.HEDGE_MIN_SIZE_BTC: return None
+
+        side = "Buy" if quantity_to_hedge_btc_signed > 0 else "Sell"
+        quantity_abs_btc = abs(quantity_to_hedge_btc_signed)
+        delta_impact_of_hedge_btc = quantity_to_hedge_btc_signed
+        delta_after_btc = delta_before_btc + delta_impact_of_hedge_btc
         
-        return random.random() < adjusted_probability
-    
-    def _generate_realistic_hedge(self) -> HedgeExecution:
-        """Generate a realistic hedge execution."""
-        if self.current_btc_price == 0:
-            return None
-            
-        # Choose hedge type based on realistic probabilities
-        hedge_type = random.choices(
-            list(HedgeType),
-            weights=[0.6, 0.2, 0.15, 0.03, 0.02]  # Delta most common
-        )[0]
+        exchange = random.choices(list(self.exchange_weights.keys()), weights=list(self.exchange_weights.values()))[0]
+        instrument = config.HEDGE_INSTRUMENT_SPOT if exchange != Exchange.DERIBIT else config.HEDGE_INSTRUMENT_PERP
         
-        # Choose exchange based on weights
-        exchange = random.choices(
-            list(Exchange),
-            weights=list(self.exchange_weights.values())
-        )[0]
+        # Slippage applied to make buy price higher, sell price lower
+        slippage_factor = 1 + (config.HEDGE_SLIPPAGE_MAX_PCT if side == "Buy" else -config.HEDGE_SLIPPAGE_MAX_PCT) 
+        execution_price = round(self.current_btc_price * slippage_factor, config.PRICE_ROUNDING_DP)
+        cost_of_trade_usd = quantity_abs_btc * execution_price
         
-        # Generate realistic hedge parameters
-        side = random.choice(["Buy", "Sell"])
-        
-        # Hedge quantities typically 0.1 to 2.5 BTC
-        quantity_btc = round(random.uniform(0.1, 2.5), 2)
-        
-        # Price with realistic slippage
-        slippage_factor = random.uniform(0.9998, 1.0002)  # ±0.02% slippage
-        execution_price = self.current_btc_price * slippage_factor
-        
-        # Execution cost
-        cost_usd = quantity_btc * execution_price
-        
-        # Execution time (realistic for each exchange)
-        execution_times = {
-            Exchange.COINBASE_PRO: random.uniform(150, 350),
-            Exchange.KRAKEN: random.uniform(200, 500),
-            Exchange.OKX: random.uniform(100, 250)
-        }
-        execution_time_ms = execution_times[exchange]
-        
-        # Generate reasoning based on hedge type
-        reasoning = self._generate_hedge_reasoning(hedge_type, side, quantity_btc)
-        
-        return HedgeExecution(
-            timestamp=time.time(),
-            hedge_type=hedge_type,
-            side=side,
-            quantity_btc=quantity_btc,
-            price_usd=execution_price,
-            exchange=exchange,
-            cost_usd=cost_usd,
-            reasoning=reasoning,
-            execution_time_ms=execution_time_ms
+        exec_times = config.HEDGE_EXECUTION_TIMES_MS
+        execution_time_ms = round(random.uniform(exec_times.get(exchange, 200)*0.8, exec_times.get(exchange, 200)*1.2), 1)
+        reasoning_str = self._generate_hedge_reasoning(hedge_type, side, quantity_abs_btc, delta_before_btc, delta_after_btc)
+
+        hedge = EnrichedHedgeExecution(
+            timestamp=time.time(), hedge_id=hedge_id, hedge_type=hedge_type, side=side,
+            instrument=instrument, quantity=quantity_abs_btc, price_usd=execution_price,
+            exchange=exchange, cost_usd=cost_of_trade_usd, reasoning=reasoning_str, 
+            execution_time_ms=execution_time_ms,
+            delta_before_hedge_btc=round(delta_before_btc, 4),
+            delta_impact_of_hedge_btc=round(delta_impact_of_hedge_btc, 4),
+            delta_after_hedge_btc=round(delta_after_btc, 4),
+            estimated_pnl_usd=0.0 # Initial PNL; MTM handled by PM for open hedges
         )
-    
-    def _generate_hedge_reasoning(self, hedge_type: HedgeType, side: str, quantity: float) -> str:
-        """Generate realistic hedge reasoning."""
-        reasons = {
-            HedgeType.DELTA_HEDGE: [
-                f"Portfolio delta exceeded threshold",
-                f"Rebalancing {quantity:.2f} BTC position",
-                f"Delta-neutral adjustment required",
-                f"Option flow imbalance correction"
-            ],
-            HedgeType.RL_HEDGE: [
-                f"ML model recommended {side.lower()}",
-                f"Risk-reward optimization signal",
-                f"Predictive model hedge trigger",
-                f"AI-driven position adjustment"
-            ],
-            HedgeType.PORTFOLIO_REBALANCE: [
-                f"Quarterly rebalancing schedule",
-                f"Risk allocation adjustment",
-                f"Portfolio optimization required",
-                f"Strategic position sizing"
-            ],
-            HedgeType.GAMMA_HEDGE: [
-                f"Gamma exposure management",
-                f"Convexity risk mitigation",
-                f"Second-order sensitivity hedge",
-                f"Options portfolio gamma neutral"
-            ],
-            HedgeType.VEGA_HEDGE: [
-                f"Volatility exposure reduction",
-                f"Implied vol risk management",
-                f"Vega-neutral positioning",
-                f"Vol skew protection"
-            ]
-        }
-        
-        return random.choice(reasons[hedge_type])
-    
-    def _update_24h_metrics(self, hedge: HedgeExecution):
-        """Update 24-hour hedge metrics."""
-        self.total_hedge_cost_24h += hedge.cost_usd
-        self.hedge_count_24h += 1
-        
-        # Clean up old metrics (keep only 24h)
-        cutoff_24h = time.time() - (24 * 60 * 60)
-        self.recent_hedges = [
-            h for h in self.recent_hedges 
-            if h.timestamp > cutoff_24h
-        ]
-    
-    def update_btc_price(self, price: float):
-        """Update current BTC price for hedge calculations."""
-        self.current_btc_price = price
-    
-    def get_recent_hedges(self, limit: int = 10) -> List[HedgeExecution]:
-        """Get most recent hedge executions."""
-        return sorted(self.recent_hedges, key=lambda x: x.timestamp, reverse=True)[:limit]
-    
-    def get_hedge_metrics(self) -> Dict:
-        """Get hedge execution metrics."""
-        cutoff_24h = time.time() - (24 * 60 * 60)
-        recent_hedges_24h = [
-            h for h in self.recent_hedges 
-            if h.timestamp > cutoff_24h
-        ]
-        
-        if not recent_hedges_24h:
-            return {
-                "hedges_24h": 0,
-                "total_cost_24h": 0,
-                "avg_execution_time_ms": 0,
-                "exchange_distribution": {},
-                "hedge_type_distribution": {}
+        self.recent_hedges_log.append(hedge)
+        if len(self.recent_hedges_log) > config.MAX_RECENT_HEDGES_LOG_SIZE:
+            self.recent_hedges_log = self.recent_hedges_log[-config.MAX_RECENT_HEDGES_LOG_SIZE:]
+
+        if self.position_manager:
+            pm_hedge_data = {
+                "hedge_id": hedge.hedge_id, "instrument_type": hedge.instrument,
+                "quantity_btc_signed": quantity_to_hedge_btc_signed,
+                "entry_price_usd": hedge.price_usd, "timestamp": hedge.timestamp
             }
+            self.position_manager.add_hedge_position(pm_hedge_data)
+
+        if self.audit_engine:
+            transaction_fee = cost_of_trade_usd * config.HEDGE_TRANSACTION_FEE_PCT
+            self.audit_engine.track_hedging_activity(pnl_usd=-transaction_fee, cost_usd=transaction_fee, hedge_id=hedge_id) # Initial impact is cost
         
-        # Calculate metrics
-        total_cost = sum(h.cost_usd for h in recent_hedges_24h)
-        avg_execution_time = sum(h.execution_time_ms for h in recent_hedges_24h) / len(recent_hedges_24h)
+        logger.info(f"🛡️ HFM Hedge: {hedge_id} {side} {quantity_abs_btc:.2f} {instrument} on {exchange.value} @ ${execution_price:,.2f}. Delta {delta_before_btc:.2f} -> {delta_after_btc:.2f}")
+        return hedge
+
+    def _generate_hedge_reasoning(self, ht: HedgeType, s: str, q: float, db: float, da: float) -> str:
+        return f"{ht.value}: {s} {q:.2f} BTC. Delta {db:.2f} -> {da:.2f}."
+
+    def update_btc_price(self, price: float):
+        if price > 0: self.current_btc_price = price
+        # PositionManager is responsible for MTM updates of its open hedges
+
+    def get_recent_hedges(self, limit: int = 10) -> List[EnrichedHedgeExecution]:
+        # If PM is source of truth for MTM PNL of open hedges, could enrich here before returning
+        # For now, returns from local log. PM will have the MTM PNL.
+        return sorted(self.recent_hedges_log, key=lambda x: x.timestamp, reverse=True)[:limit]
+
+    def get_hedge_metrics(self) -> Dict: # From your Attachment [4], adapted
+        cutoff_24h = time.time() - (24 * 60 * 60)
+        hedges_24h = [h for h in self.recent_hedges_log if h.timestamp >= cutoff_24h]
+
+        if not hedges_24h:
+            return {"hedges_24h": 0, "total_volume_hedged_btc_24h":0, "total_gross_value_usd_24h": 0,
+                    "avg_execution_time_ms": 0, "exchange_distribution": {}, "hedge_type_distribution": {},
+                    "net_hedging_pnl_24h_usd": 0.0, "data_source": "hfm_log_no_hedges_24h"}
+
+        total_abs_volume_btc = sum(h.quantity for h in hedges_24h) # Absolute BTC volume transacted
+        total_gross_value = sum(h.cost_usd for h in hedges_24h) # Gross USD value of transactions
+        avg_exec_time = sum(h.execution_time_ms for h in hedges_24h) / len(hedges_24h)
         
-        # Exchange distribution
-        exchange_dist = {}
-        for exchange in Exchange:
-            count = len([h for h in recent_hedges_24h if h.exchange == exchange])
-            exchange_dist[exchange.value] = count
-            
-        # Hedge type distribution
-        hedge_type_dist = {}
-        for hedge_type in HedgeType:
-            count = len([h for h in recent_hedges_24h if h.hedge_type == hedge_type])
-            hedge_type_dist[hedge_type.value] = count
+        net_hedging_pnl = 0.0
+        if self.audit_engine: # Get from AuditEngine for consistency
+            metrics_24h = self.audit_engine.get_24h_metrics()
+            net_hedging_pnl = metrics_24h.net_hedging_pnl_24h_usd
+        else: # Placeholder if no AuditEngine
+            logger.warning("HFM: AuditEngine not available for net_hedging_pnl_24h_usd in metrics.")
+
+        exchange_dist = defaultdict(int); type_dist = defaultdict(int)
+        for h in hedges_24h:
+            exchange_dist[h.exchange.value] += 1; type_dist[h.hedge_type.value] += 1
         
         return {
-            "hedges_24h": len(recent_hedges_24h),
-            "total_cost_24h": total_cost,
-            "avg_execution_time_ms": avg_execution_time,
-            "exchange_distribution": exchange_dist,
-            "hedge_type_distribution": hedge_type_dist
+            "hedges_executed_24h": len(hedges_24h), # Renamed for clarity
+            "total_btc_volume_hedged_24h": round(total_abs_volume_btc, 2),
+            "total_gross_value_transacted_usd_24h": round(total_gross_value, 2),
+            "avg_execution_time_ms": round(avg_exec_time, 1),
+            "exchange_distribution_count": dict(exchange_dist),
+            "hedge_type_distribution_count": dict(type_dist),
+            "net_hedging_pnl_24h_usd": round(net_hedging_pnl, 2), # From AuditEngine
+            "data_source": "hfm_log_and_audit_engine"
         }
+
+    def stop(self):
+        self.is_running = False; logger.info("🛡️ HedgeFeedManager simulation loop stopped.")
+

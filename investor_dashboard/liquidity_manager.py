@@ -1,329 +1,202 @@
-# investor_dashboard/liquidity_manager.py (REALISTIC PARAMETERS VERSION)
+# investor_dashboard/liquidity_manager.py
 
-from dataclasses import dataclass
-from typing import Dict
-import math
 import time
+from dataclasses import dataclass
+from typing import Dict, List, Optional, Any
+import logging
+import random
+
+from backend import config
+
+logger = logging.getLogger(__name__)
 
 @dataclass
 class LiquidityStatus:
     total_pool_usd: float
-    allocated_to_liquidity_pct: float
-    allocated_to_operations_pct: float
-    allocated_to_profit_pct: float
+    available_liquidity_usd: float
+    reserved_liquidity_usd: float
+    utilization_percentage: float
     active_users: int
     required_liquidity_usd: float
     liquidity_ratio: float
     stress_test_buffer_usd: float
-    # Enhanced: Add options-specific metrics
-    options_exposure_usd: float
-    hedge_coverage_ratio: float
-    volatility_buffer_usd: float
-    risk_level: str
+    status_message: str
+    last_update_timestamp: float
 
 class LiquidityManager:
-    """Realistic liquidity manager for BTC options trading platform."""
+    def __init__(self,
+                 initial_total_pool_usd: float = config.LM_INITIAL_TOTAL_POOL_USD,
+                 initial_active_users: int = config.LM_INITIAL_ACTIVE_USERS,
+                 base_liquidity_per_user_usd: float = config.LM_BASE_LIQUIDITY_PER_USER_USD,
+                 volume_factor_per_user_usd: float = config.LM_VOLUME_FACTOR_PER_USER_USD,
+                 options_exposure_factor: float = config.LM_OPTIONS_EXPOSURE_FACTOR,
+                 stress_test_buffer_pct: float = config.LM_STRESS_TEST_BUFFER_PCT,
+                 min_liquidity_ratio: float = config.LM_MIN_LIQUIDITY_RATIO,
+                 audit_engine_instance: Optional[Any] = None):
+        
+        # Store configuration parameters
+        self.total_pool_usd = initial_total_pool_usd
+        self.active_users = initial_active_users
+        self.base_liquidity_per_user = base_liquidity_per_user_usd
+        self.volume_factor_per_user = volume_factor_per_user_usd
+        self.options_exposure_factor = options_exposure_factor
+        self.stress_test_buffer_pct = stress_test_buffer_pct
+        self.min_liquidity_ratio = min_liquidity_ratio
+        self.audit_engine = audit_engine_instance
+        
+        # Initialize state
+        self.reserved_liquidity_usd = 0.0
+        self.last_update_time = time.time()
+        
+        # Calculate initial required liquidity
+        self.required_liquidity_usd = self._calculate_required_liquidity()
+        
+        logger.info(f"LiquidityManager initialized. Pool: ${self.total_pool_usd:,.2f}, Users: {self.active_users}, Min Ratio: {self.min_liquidity_ratio}")
 
-    def __init__(self):
-        # ← REALISTIC: Allocation based on actual trading patterns
-        self.liquidity_allocation_pct = 75.0
-        self.operations_allocation_pct = 20.0
-        self.profit_allocation_pct = 5.0
+    def _calculate_required_liquidity(self) -> float:
+        """Calculate the required liquidity based on current state."""
+        # Base liquidity requirement
+        base_requirement = self.active_users * self.base_liquidity_per_user
         
-        # ← REALISTIC: Base pool sized for actual trading volumes
-        self.base_liquidity_pool = 2_000_000  # $2M base (down from $5M)
-        self.max_liquidity_pool = 10_000_000  # $10M maximum cap
+        # Volume-based requirement
+        volume_requirement = self.active_users * self.volume_factor_per_user
         
-        # ← REALISTIC: User and volume parameters
-        self.active_users = 100  # Start with 100 users
-        self.max_users = 1000   # Support up to 1000 users
+        # Options exposure requirement (placeholder - would be calculated from actual positions)
+        # For now, use a simple estimate based on active users and exposure factor
+        estimated_options_exposure = self.active_users * self.base_liquidity_per_user * self.options_exposure_factor
         
-        # ← REALISTIC: Trading volume per user (based on real BTC options data)
-        self.avg_trade_per_user_per_day = 750  # $750/user/day (realistic)
-        self.avg_daily_volume = self.active_users * self.avg_trade_per_user_per_day
+        total_required = base_requirement + volume_requirement + estimated_options_exposure
         
-        # ← REALISTIC: Options-specific parameters
-        self.avg_option_premium = 500    # $500 average (down from $1200)
-        self.contracts_per_user = 1.5    # 1.5 contracts per user average (down from 2.5)
-        self.volatility_multiplier = 1.5 # 150% volatility factor (down from 300%)
-        self.hedge_efficiency = 0.85     # 85% hedge coverage
+        # Add stress test buffer
+        stress_buffer = total_required * self.stress_test_buffer_pct
         
-        # Auto-scaling parameters
-        self.last_pool_update = time.time()
-        self.pool_growth_rate = 0.02  # 2% monthly growth
-        
-        print(f"💰 Initialized realistic liquidity manager: ${self.base_liquidity_pool:,.0f} pool, {self.active_users} users")
+        return total_required + stress_buffer
 
-    def calculate_options_specific_requirements(self) -> Dict[str, float]:
-        """Calculate realistic liquidity requirements for options trading."""
+    def update_metrics(self) -> None:
+        """Update liquidity metrics and status."""
+        current_time = time.time()
         
-        # ← REALISTIC: Base options exposure
-        estimated_open_contracts = self.active_users * self.contracts_per_user
-        base_exposure = estimated_open_contracts * self.avg_option_premium
+        # Recalculate required liquidity
+        self.required_liquidity_usd = self._calculate_required_liquidity()
         
-        # ← REALISTIC: Volatility buffer (much smaller)
-        volatility_buffer = base_exposure * (self.volatility_multiplier / 100) * 0.3  # Reduced factor
-        
-        # ← REALISTIC: Hedge coverage shortfall buffer
-        hedge_shortfall_buffer = base_exposure * (1 - self.hedge_efficiency)
-        
-        # ← REALISTIC: ITM payout reserve (conservative)
-        itm_payout_reserve = base_exposure * 0.2  # 20% of contracts could go ITM (down from 30%)
-        
-        total_options_requirement = base_exposure + volatility_buffer + hedge_shortfall_buffer + itm_payout_reserve
-        
-        return {
-            "base_exposure": base_exposure,
-            "volatility_buffer": volatility_buffer,
-            "hedge_shortfall_buffer": hedge_shortfall_buffer,
-            "itm_payout_reserve": itm_payout_reserve,
-            "total_options_requirement": total_options_requirement
-        }
-
-    def calculate_required_liquidity(self) -> float:
-        """Realistic liquidity calculation preventing exponential growth."""
-        
-        # ← REALISTIC: Base requirement
-        base_requirement = 500_000  # $500K base (down from $2M)
-        
-        # ← REALISTIC: Volume coverage (linear scaling)
-        daily_volume = self.active_users * self.avg_trade_per_user_per_day
-        volume_coverage = daily_volume * 15  # 15x daily volume (industry standard)
-        
-        # ← FIXED: Linear user scaling with diminishing returns
-        if self.active_users <= 100:
-            user_multiplier = 1.0
-        elif self.active_users <= 300:
-            user_multiplier = 1.0 + ((self.active_users - 100) / 200) * 0.5  # Slower growth
-        elif self.active_users <= 600:
-            user_multiplier = 1.5 + ((self.active_users - 300) / 300) * 0.3  # Even slower
+        # Add some realistic variation to simulate market conditions
+        if hasattr(self, '_last_variation_time'):
+            time_since_last = current_time - self._last_variation_time
+            if time_since_last > 300:  # Update every 5 minutes
+                variation = random.uniform(-0.02, 0.02)  # ±2% variation
+                self.total_pool_usd *= (1 + variation)
+                self._last_variation_time = current_time
         else:
-            user_multiplier = 1.8 + ((self.active_users - 600) / 400) * 0.2  # Minimal growth
+            self._last_variation_time = current_time
         
-        user_buffer = 300_000 * user_multiplier  # $300K base with multiplier
+        self.last_update_time = current_time
         
-        # ← REALISTIC: Stress test buffer with cap
-        stress_buffer = min(daily_volume * 10, 2_000_000)  # 10x daily volume, capped at $2M
-        
-        # ← REALISTIC: Options-specific requirements
-        options_requirements = self.calculate_options_specific_requirements()
-        options_buffer = options_requirements["total_options_requirement"]
-        
-        # Calculate total
-        total_required = base_requirement + volume_coverage + user_buffer + stress_buffer + options_buffer
-        
-        # ← CRITICAL: Maximum cap to prevent runaway calculations
-        MAX_LIQUIDITY_REQUIREMENT = 8_000_000  # $8M maximum (realistic)
-        total_required = min(total_required, MAX_LIQUIDITY_REQUIREMENT)
-        
-        # ← DEBUG: Log if calculations seem high
-        if total_required > 5_000_000:
-            print(f"⚠️ High liquidity requirement: ${total_required:,.0f} for {self.active_users} users")
-            print(f"   Daily volume: ${daily_volume:,.0f}, Options exposure: ${options_buffer:,.0f}")
-        
-        return total_required
+        # Log periodic updates
+        if not hasattr(self, '_last_log_time') or (current_time - self._last_log_time) > 3600:  # Log every hour
+            status = self.get_liquidity_status()
+            logger.info(f"LM: Pool=${status.total_pool_usd:,.2f}, Ratio={status.liquidity_ratio:.2f}, Util={status.utilization_percentage:.1f}%")
+            self._last_log_time = current_time
 
-    def auto_scale_pool(self):
-        """Smart auto-scaling with realistic limits."""
-        required_liquidity = self.calculate_required_liquidity()
-        current_liquidity = self.base_liquidity_pool * (self.liquidity_allocation_pct / 100)
-        
-        # Check if we need more liquidity
-        if required_liquidity > current_liquidity:
-            # Calculate needed pool size
-            needed_pool = required_liquidity * 1.2 / (self.liquidity_allocation_pct / 100)  # 20% buffer
-            
-            # Cap at maximum pool size
-            target_pool = min(needed_pool, self.max_liquidity_pool)
-            
-            # Gradual scaling (max 20% increase at a time)
-            max_increase = self.base_liquidity_pool * 0.2
-            actual_increase = min(target_pool - self.base_liquidity_pool, max_increase)
-            
-            if actual_increase > 0:
-                old_pool = self.base_liquidity_pool
-                self.base_liquidity_pool += actual_increase
-                print(f"💰 Auto-scaled pool: ${old_pool:,.0f} → ${self.base_liquidity_pool:,.0f}")
-
-    def manage_user_growth(self):
-        """Realistic user growth management."""
-        import random
-        
-        # ← REALISTIC: Smaller, more realistic variations
-        if self.active_users < 200:
-            base_variation = random.randint(-1, 3)  # Can grow faster when small
-        elif self.active_users < 500:
-            base_variation = random.randint(-2, 2)  # Moderate growth
-        else:
-            base_variation = random.randint(-2, 1)  # Slower growth when large
-        
-        # Apply variation with bounds
-        self.active_users = max(50, min(self.max_users, self.active_users + base_variation))
-        
-        # Update daily volume based on new user count
-        self.avg_daily_volume = self.active_users * self.avg_trade_per_user_per_day
-        
-        # Auto-scale pool if needed
-        self.auto_scale_pool()
-
-    def simulate_user_growth(self, new_user_count: int):
-        """Simulate user growth with realistic constraints."""
-        if new_user_count > self.max_users:
-            print(f"⚠️ User count {new_user_count} exceeds maximum {self.max_users}. Setting to {self.max_users}.")
-            new_user_count = self.max_users
-        
-        if new_user_count < 50:
-            print(f"⚠️ User count {new_user_count} below minimum 50. Setting to 50.")
-            new_user_count = 50
-        
-        old_users = self.active_users
-        self.active_users = new_user_count
-        
-        # ← REALISTIC: Update volume based on realistic per-user trading
-        self.avg_daily_volume = self.active_users * self.avg_trade_per_user_per_day
-        
-        # ← REALISTIC: Adjust option parameters gradually
-        # Premium increases slightly with platform size (network effect)
-        base_premium = 500
-        network_bonus = min((self.active_users / 100) * 25, 200)  # Max $200 bonus
-        self.avg_option_premium = base_premium + network_bonus
-        
-        # Trigger auto-scaling
-        self.auto_scale_pool()
-        
-        print(f"👥 User growth: {old_users} → {new_user_count} users")
-        print(f"📊 Daily volume: ${self.avg_daily_volume:,.0f}")
-        print(f"💰 Pool size: ${self.base_liquidity_pool:,.0f}")
-
-    def adjust_allocation(self, liquidity_pct: float, operations_pct: float):
-        """Adjust allocation with safety checks."""
-        profit_pct = 100.0 - liquidity_pct - operations_pct
-        
-        if profit_pct < 0:
-            raise ValueError("Allocation percentages exceed 100%")
-        
-        # Safety check for options platform
-        if liquidity_pct < 60.0:
-            raise ValueError("Liquidity allocation cannot be below 60% for options platform safety")
-        
-        if liquidity_pct > 90.0:
-            raise ValueError("Liquidity allocation cannot exceed 90% (need operational funds)")
-        
-        self.liquidity_allocation_pct = liquidity_pct
-        self.operations_allocation_pct = operations_pct
-        self.profit_allocation_pct = profit_pct
-        
-        # Trigger scaling check
-        self.auto_scale_pool()
-        
-        print(f"📊 Allocation updated: {liquidity_pct}% liquidity, {operations_pct}% operations, {profit_pct}% profit")
-
-    def get_status(self) -> LiquidityStatus:
-        """Get current liquidity status with realistic metrics."""
-        
-        # Apply user management
-        self.manage_user_growth()
-        
-        required_liquidity = self.calculate_required_liquidity()
-        options_data = self.calculate_options_specific_requirements()
-        
-        # Calculate allocated amounts
-        liquidity_amount = self.base_liquidity_pool * (self.liquidity_allocation_pct / 100)
+    def get_liquidity_status(self) -> LiquidityStatus:
+        """Get current liquidity status."""
+        available_liquidity = self.total_pool_usd - self.reserved_liquidity_usd
         
         # Calculate liquidity ratio
-        liquidity_ratio = liquidity_amount / required_liquidity if required_liquidity > 0 else 1.0
+        liquidity_ratio = self.total_pool_usd / self.required_liquidity_usd if self.required_liquidity_usd > 0 else float('inf')
         
-        # ← REALISTIC: Risk assessment
-        if liquidity_ratio >= 1.5:
-            risk_level = "LOW"
-        elif liquidity_ratio >= 1.0:
-            risk_level = "MEDIUM"
-        elif liquidity_ratio >= 0.7:
-            risk_level = "HIGH"
+        # Calculate utilization percentage
+        utilization_pct = (self.reserved_liquidity_usd / self.total_pool_usd) * 100 if self.total_pool_usd > 0 else 0
+        
+        # Calculate stress test buffer
+        stress_buffer = self.required_liquidity_usd * self.stress_test_buffer_pct
+        
+        # Determine status message
+        if liquidity_ratio >= self.min_liquidity_ratio:
+            if liquidity_ratio >= self.min_liquidity_ratio * 1.5:
+                status_msg = "Excellent - High Liquidity"
+            else:
+                status_msg = "Good - Adequate Liquidity"
+        elif liquidity_ratio >= self.min_liquidity_ratio * 0.8:
+            status_msg = "Warning - Low Liquidity"
         else:
-            risk_level = "CRITICAL"
+            status_msg = "Critical - Insufficient Liquidity"
         
         return LiquidityStatus(
-            total_pool_usd=self.base_liquidity_pool,
-            allocated_to_liquidity_pct=self.liquidity_allocation_pct,
-            allocated_to_operations_pct=self.operations_allocation_pct,
-            allocated_to_profit_pct=self.profit_allocation_pct,
+            total_pool_usd=round(self.total_pool_usd, 2),
+            available_liquidity_usd=round(available_liquidity, 2),
+            reserved_liquidity_usd=round(self.reserved_liquidity_usd, 2),
+            utilization_percentage=round(utilization_pct, 2),
             active_users=self.active_users,
-            required_liquidity_usd=required_liquidity,
-            liquidity_ratio=liquidity_ratio,
-            stress_test_buffer_usd=min(self.avg_daily_volume * 10, 2_000_000),
-            # Enhanced fields
-            options_exposure_usd=options_data["base_exposure"],
-            hedge_coverage_ratio=self.hedge_efficiency,
-            volatility_buffer_usd=options_data["volatility_buffer"],
-            risk_level=risk_level
+            required_liquidity_usd=round(self.required_liquidity_usd, 2),
+            liquidity_ratio=round(liquidity_ratio, 3),
+            stress_test_buffer_usd=round(stress_buffer, 2),
+            status_message=status_msg,
+            last_update_timestamp=self.last_update_time
         )
 
-    def update_metrics(self):
-        """Update metrics with realistic market variations."""
-        import random
+    def reserve_liquidity(self, amount_usd: float, reason: str = "General Reserve") -> bool:
+        """Reserve liquidity for a specific purpose."""
+        if amount_usd <= 0:
+            return False
         
-        # Realistic user variations (managed by manage_user_growth)
-        self.manage_user_growth()
-        
-        # ← REALISTIC: Volume variation (smaller range)
-        volatility_factor = random.uniform(0.95, 1.05)  # ±5% variation (down from ±15%)
-        base_volume_per_user = self.avg_trade_per_user_per_day
-        self.avg_trade_per_user_per_day = base_volume_per_user * volatility_factor
-        
-        # Update total daily volume
-        self.avg_daily_volume = self.active_users * self.avg_trade_per_user_per_day
-        
-        # ← REALISTIC: Option premium variation (smaller)
-        premium_variation = random.uniform(0.95, 1.05)  # ±5% variation (down from ±30%)
-        base_premium = 500 + (self.active_users / 100) * 25  # Base + network effect
-        self.avg_option_premium = max(300, base_premium * premium_variation)
-        
-        # Periodic auto-scaling check (reduced frequency)
-        if random.random() < 0.05:  # 5% chance each update (down from 10%)
-            self.auto_scale_pool()
+        available = self.total_pool_usd - self.reserved_liquidity_usd
+        if available >= amount_usd:
+            self.reserved_liquidity_usd += amount_usd
+            logger.info(f"LM: Reserved ${amount_usd:,.2f} for {reason}. Total reserved: ${self.reserved_liquidity_usd:,.2f}")
+            return True
+        else:
+            logger.warning(f"LM: Cannot reserve ${amount_usd:,.2f} for {reason}. Available: ${available:,.2f}")
+            return False
 
-    def get_liquidity_recommendations(self) -> Dict[str, str]:
-        """Provide realistic liquidity management recommendations."""
-        status = self.get_status()
-        recommendations = []
+    def release_liquidity(self, amount_usd: float, reason: str = "General Release") -> bool:
+        """Release previously reserved liquidity."""
+        if amount_usd <= 0 or amount_usd > self.reserved_liquidity_usd:
+            return False
         
-        if status.liquidity_ratio < 0.7:
-            recommendations.append("URGENT: Increase liquidity pool or reduce user onboarding")
-        elif status.liquidity_ratio < 1.0:
-            recommendations.append("WARNING: Liquidity below safe threshold - consider pool increase")
-        elif status.liquidity_ratio > 2.0:
-            recommendations.append("INFO: Liquidity pool may be over-provisioned - consider profit allocation increase")
-        
-        if status.hedge_coverage_ratio < 0.8:
-            recommendations.append("Improve hedge coverage to reduce liquidity requirements")
-        
-        if status.risk_level in ["HIGH", "CRITICAL"]:
-            recommendations.append("Consider increasing liquidity allocation percentage")
-        
-        if status.active_users > 800:
-            recommendations.append("High user count - monitor liquidity requirements closely")
-        
-        if not recommendations:
-            recommendations.append("Liquidity management is healthy - maintain current strategy")
+        self.reserved_liquidity_usd -= amount_usd
+        logger.info(f"LM: Released ${amount_usd:,.2f} for {reason}. Total reserved: ${self.reserved_liquidity_usd:,.2f}")
+        return True
+
+    def add_liquidity(self, amount_usd: float, source: str = "External") -> None:
+        """Add liquidity to the pool."""
+        if amount_usd > 0:
+            self.total_pool_usd += amount_usd
+            logger.info(f"LM: Added ${amount_usd:,.2f} from {source}. Total pool: ${self.total_pool_usd:,.2f}")
+
+    def update_active_users(self, new_user_count: int) -> None:
+        """Update the active user count."""
+        if new_user_count >= 0:
+            old_count = self.active_users
+            self.active_users = new_user_count
+            logger.info(f"LM: Updated active users: {old_count} -> {new_user_count}")
+
+    def get_metrics_summary(self) -> Dict[str, Any]:
+        """Get a summary of key liquidity metrics."""
+        status = self.get_liquidity_status()
         
         return {
-            "recommendations": recommendations,
-            "suggested_pool_size": max(status.required_liquidity_usd * 1.2, 2_000_000),
-            "optimal_allocation": "75% liquidity, 20% operations, 5% profit",
-            "max_safe_users": min(1000, int(self.max_liquidity_pool * 0.75 / (self.avg_trade_per_user_per_day * 20)))
+            "pool_total_usd": status.total_pool_usd,
+            "available_usd": status.available_liquidity_usd,
+            "utilization_pct": status.utilization_percentage,
+            "liquidity_ratio": status.liquidity_ratio,
+            "active_users": status.active_users,
+            "status": status.status_message,
+            "last_update": status.last_update_timestamp,
+            "meets_minimum_ratio": status.liquidity_ratio >= self.min_liquidity_ratio
         }
 
-    def get_debug_info(self) -> Dict:
-        """Get debug information for troubleshooting."""
+    def stress_test_liquidity(self, scenario_multiplier: float = 2.0) -> Dict[str, Any]:
+        """Perform a stress test on liquidity requirements."""
+        current_required = self.required_liquidity_usd
+        stress_required = current_required * scenario_multiplier
+        stress_ratio = self.total_pool_usd / stress_required if stress_required > 0 else float('inf')
+        
         return {
-            "current_users": self.active_users,
-            "max_users": self.max_users,
-            "daily_volume": self.avg_daily_volume,
-            "avg_trade_per_user": self.avg_trade_per_user_per_day,
-            "avg_option_premium": self.avg_option_premium,
-            "contracts_per_user": self.contracts_per_user,
-            "base_pool": self.base_liquidity_pool,
-            "max_pool": self.max_liquidity_pool,
-            "pool_utilization_pct": (self.base_liquidity_pool / self.max_liquidity_pool) * 100
+            "scenario_multiplier": scenario_multiplier,
+            "current_required_usd": current_required,
+            "stress_required_usd": stress_required,
+            "current_ratio": self.total_pool_usd / current_required if current_required > 0 else float('inf'),
+            "stress_ratio": stress_ratio,
+            "passes_stress_test": stress_ratio >= self.min_liquidity_ratio,
+            "additional_liquidity_needed_usd": max(0, stress_required - self.total_pool_usd)
         }

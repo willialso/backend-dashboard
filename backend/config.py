@@ -1,194 +1,234 @@
 # backend/config.py
 
 import os
-from typing import List, Dict
+import json
+from typing import List, Dict, Any
+import logging # <<< ADD THIS IMPORT
+
+# === LOGGER SETUP (MUST BE AT THE TOP BEFORE ANY LOGGER CALLS) ===
+# Configure a basic logger for the config file itself.
+# Other modules should get their own logger via logging.getLogger(__name__)
+config_logger = logging.getLogger(__name__) # Use a specific name for this logger
+# Set a basic configuration if no other logging is configured by main_dashboard.py yet
+# This is important if config.py is imported and executed before main_dashboard's logging setup.
+if not logging.getLogger().hasHandlers(): # Check if root logger has handlers
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s - CONFIG - %(levelname)s - %(message)s")
+# =================================================================
 
 # === CORE PLATFORM SETTINGS ===
 PLATFORM_NAME = "Atticus"
-VERSION = "2.2" # Version updated to reflect new engine capabilities
+VERSION = "2.3.1" # Incremented version for this fix
 DEMO_MODE = True
+DEBUG_MODE = True
 
-# === WEBSOCKET FEED URLS === (FIXED: Use alternative Coinbase endpoint)
-COINBASE_WS_URL = "wss://ws-feed.exchange.coinbase.com"  # ← FIXED: Changed from blocked endpoint
-KRAKEN_WS_URL_V2 = "wss://ws.kraken.com/v2"
-OKX_WS_URL = "wss://ws.okx.com:8443/ws/v5/public"
+# === API & SERVER SETTINGS ===
+# For Render/Docker, 0.0.0.0 is usually better than localhost.
+# For local dev, "localhost" or "127.0.0.1" is fine.
+# Let's make 0.0.0.0 the default for wider compatibility.
+API_HOST = os.environ.get("API_HOST", "0.0.0.0")
+API_PORT = int(os.environ.get("PORT", 8001)) # Render uses PORT, default to 8001 as in your main_dashboard
 
-# === EXCHANGE-SPECIFIC PRODUCT/TICKER SYMBOLS ===
-COINBASE_PRODUCT_ID = "BTC-USD"           # Required by coinbase_client.py
-KRAKEN_TICKER_SYMBOL = "BTC/USD"          # Required by kraken_client.py (v2 format)
-
-# Backup URLs for reference
-COINBASE_WS_URL_BACKUP = "wss://ws-feed.pro.coinbase.com"        # CloudFlare blocked
-COINBASE_WS_URL_ALTERNATIVE = "wss://ws-feed.exchange.coinbase.com"  # Working alternative
-
-# === CONTRACT SPECIFICATIONS ===
-# *** Updated contract size to 0.1 BTC for institutional standard ***
-STANDARD_CONTRACT_SIZE_BTC = 0.1 # Each contract represents 0.1 BTC
-CONTRACT_SIZES_AVAILABLE = [0.1] # Institutional contract size
-
-# === EXPIRY CONFIGURATIONS ===
-# *** UPDATED: Removed 5-minute "gambling" expiry for professional credibility ***
-AVAILABLE_EXPIRIES_MINUTES = [
-    15, # 15 minutes - shortest professional timeframe
-    60, # 1 hour
-    240, # 4 hours
-    480 # 8 hours
-]
-
-# *** UPDATED: Removed "Turbo" label, keeping professional naming ***
-EXPIRY_LABELS = {
-    15: "Express",
-    60: "Hourly",
-    240: "4-Hour",
-    480: "8-Hour"
-}
-
-# === PRICING ENGINE SETTINGS ===
-RISK_FREE_RATE = 0.05 # 5% annual risk-free rate
-
-# Adjusted for more realistic smile effects and broader range for BTC
-MIN_VOLATILITY = 0.15 # 15% minimum annualized volatility floor
-MAX_VOLATILITY = 3.00 # 300% maximum volatility cap
-DEFAULT_VOLATILITY = 0.80 # 80% default if calculation fails or for initial warm-up
-DEFAULT_VOLATILITY_FOR_BASIC_BS = 0.80 # If using a very basic BS model elsewhere
-
-# Advanced volatility settings
-VOLATILITY_REGIME_DETECTION = True
-VOLATILITY_EWMA_ALPHA = 0.1 # Decay factor for EWMA volatility
-
-# Regime multipliers (can be tuned based on market observation)
-VOLATILITY_REGIME_MULTIPLIER_LOW = 0.85 # Applied to EWMA vol in low vol regime
-VOLATILITY_REGIME_MULTIPLIER_MEDIUM = 1.0 # Applied to EWMA vol in medium vol regime
-VOLATILITY_REGIME_MULTIPLIER_HIGH = 1.25 # Applied to EWMA vol in high vol regime
-
-# Short-term expiry volatility adjustments (applied to ATM vol before smile/skew)
-# These factors boost ATM volatility for options very close to expiry.
-VOLATILITY_SHORT_EXPIRY_ADJUSTMENTS = { # expiry_minutes: multiplier
-    15: 1.15, # For 15 min expiry, boost ATM vol by 15%
-    60: 1.05 # For 1 hour expiry, boost ATM vol by 5%
-    # Add other expiries if specific short-term boosts are desired
-}
-
-# Fallback multiplier if an expiry is not explicitly listed above (no adjustment)
-VOLATILITY_DEFAULT_SHORT_EXPIRY_ADJUSTMENT = 1.0
-
-# Volatility Smile/Skew Parameters (applied to ATM vol for a given expiry)
-# Model: Vol_strike = ATM_Vol_expiry * (1 + CURVATURE * ln(K/S)^2 + SKEW * ln(K/S))
-# These parameters define the general shape of the smile/skew.
-# Positive CURVATURE creates a "smile" (higher vol for OTM/ITM).
-# Negative SKEW_FACTOR typically creates "reverse skew" (OTM puts > OTM calls IV), common in equity/crypto.
-VOLATILITY_SMILE_CURVATURE = 0.15 # Higher value = more pronounced smile. Example: 0.1 to 0.3
-VOLATILITY_SKEW_FACTOR = -0.10 # Example: -0.05 to -0.2 for crypto/equity.
-
-# Bounds for the smile/skew multiplicative adjustment factor.
-# This prevents the smile/skew model from pushing strike-specific volatility to absurd levels
-# relative to the adjusted ATM volatility for that expiry.
-MIN_SMILE_ADJUSTMENT_FACTOR = 0.70 # Volatility for a strike won't drop below 70% of its expiry's ATM vol due to smile/skew
-MAX_SMILE_ADJUSTMENT_FACTOR = 1.50 # Volatility for a strike won't exceed 150% of its expiry's ATM vol due to smile/skew
-
-# GARCH and ML Volatility flags (can be enabled if respective components are implemented)
-VOLATILITY_GARCH_ENABLED = False # Set to True if GARCH models are integrated
-ML_VOL_TRAINING_INTERVAL = 500 # Example: Retrain ML vol model every 500 data points
-PRICE_CHANGE_THRESHOLD_FOR_BROADCAST = 0.0001 # Threshold for broadcasting price updates
-
-# === STRIKE GENERATION ===
-# *** UPDATED: Removed 5-minute strike config, optimized for professional expiries ***
-STRIKE_RANGES_BY_EXPIRY = {
-    15: {"num_itm": 7, "num_otm": 7, "step_pct": 0.005}, # Express - tight spacing
-    60: {"num_itm": 10, "num_otm": 10, "step_pct": 0.01}, # Hourly - moderate spacing
-    240: {"num_itm": 12, "num_otm": 12, "step_pct": 0.02}, # 4-Hour - wider spacing
-    480: {"num_itm": 15, "num_otm": 15, "step_pct": 0.03} # 8-Hour - widest spacing
-}
-
-STRIKE_ROUNDING_NEAREST = 10 # Round strikes to nearest $10
-
-# === DATA FEED SETTINGS === (FIXED: Prioritize OKX)
-EXCHANGES_ENABLED = ["okx", "coinbase", "kraken"]  # ← FIXED: OKX first (most real-time)
-PRIMARY_EXCHANGE = "okx"                           # ← FIXED: Changed from coinbase to okx
-DATA_BROADCAST_INTERVAL_SECONDS = 1.0 # Interval at which price data is assumed to arrive/be processed
-PRICE_HISTORY_MAX_POINTS = 10000 # Max number of price points to store for volatility calculations
-
-# === ALPHA SIGNAL SETTINGS ===
-ALPHA_SIGNALS_ENABLED = False # Set to True to enable alpha signal adjustments in pricing
-BAR_PORTION_LOOKBACK = 20
-REGIME_DETECTION_LOOKBACK = 100 # Lookback for regime detection in alpha signals
-MACD_FAST = 12
-MACD_SLOW = 26
-MACD_SIGNAL = 9
-REGIME_TRAINING_INTERVAL = 1000
-
-# === FEATURE FLAGS ===
-SENTIMENT_ANALYSIS_ENABLED = False
-USE_RL_HEDGER = False
-USE_ML_VOLATILITY = False # Set to True if ML-based volatility forecasting is implemented and active
-REGIME_DETECTION_ENABLED = True # General flag for regime detection features (volatility engine also uses its own)
-
-# === HEDGING SIMULATION ===
-HEDGING_ENABLED = True
-DELTA_HEDGE_FREQUENCY_MINUTES = 5
-HEDGE_SLIPPAGE_BPS = 2 # Basis points
-
-# === RISK MANAGEMENT ===
-MAX_SINGLE_USER_EXPOSURE_BTC = 10.0
-MAX_PLATFORM_NET_DELTA_BTC = 100.0
-MARGIN_REQUIREMENT_MULTIPLIER = 1.5
-
-# === API SETTINGS ===
-API_PORT = 8000
-API_HOST = "localhost"
+LOVABLE_PREVIEW_URL = "https://preview--atticus-insight-hub.lovable.app" # FROM LATEST ERRORS
 CORS_ORIGINS = [
-    "*", # Allow all for local development, restrict in production
     "http://localhost:3000",
     "http://127.0.0.1:3000",
-    "https://preview--atticus-option-flow.lovable.app"
+    "http://localhost:5173", # Common Vite/React dev port
+    "http://127.0.0.1:5173",
+    LOVABLE_PREVIEW_URL,
+    "https://atticus-insight-hub.lovable.app", # Assumed production
 ]
+RENDER_BACKEND_URL = "https://atticus-demo-dashboard.onrender.com"
+if RENDER_BACKEND_URL and RENDER_BACKEND_URL not in CORS_ORIGINS:
+    CORS_ORIGINS.append(RENDER_BACKEND_URL)
 
-API_STARTUP_TIMEOUT = 20
-WEBSOCKET_TIMEOUT_SECONDS = 30
+API_STARTUP_TIMEOUT = 30
+WEBSOCKET_UPDATE_INTERVAL_SECONDS = 2.0
+BACKGROUND_UPDATE_INTERVAL_SECONDS = 1.0
+WEBSOCKET_TIMEOUT_SECONDS = 60
 
-# === LOGGING ===
-LOG_LEVEL = "INFO" # Can be "DEBUG" for more verbose output
-LOG_FILE = "logs/atticus.log"
+# === DATA FEED SETTINGS ===
+COINBASE_WS_URL = "wss://ws-feed.exchange.coinbase.com"
+KRAKEN_WS_URL_V2 = "wss://ws.kraken.com/v2"
+OKX_WS_URL = "wss://ws.okx.com:8443/ws/v5/public"
+COINBASE_PRODUCT_ID = "BTC-USD"
+KRAKEN_TICKER_SYMBOL = "BTC/USD"
+EXCHANGES_ENABLED = ["okx", "coinbase", "kraken"]
+PRIMARY_EXCHANGE = "okx"
+DATA_BROADCAST_INTERVAL_SECONDS = 1.0
+PRICE_HISTORY_MAX_POINTS = 10000
+PRICE_CHANGE_THRESHOLD_FOR_BROADCAST = 0.0001 # 0.01% change
 
-# === DATABASE ===
-DATABASE_URL = "sqlite:///./atticus_demo.db"
+# === CONTRACT SPECIFICATIONS ===
+STANDARD_CONTRACT_SIZE_BTC = 0.1
+CONTRACT_SIZES_AVAILABLE = [0.01, 0.1, 1.0]
 
-# === ATTICUS BACKEND SETTINGS ===
-ATTICUS_BACKGROUND_TASK_INTERVAL = 30 # Seconds
+# === EXPIRY CONFIGURATIONS ===
+AVAILABLE_EXPIRIES_MINUTES = [5, 15, 30, 60, 120, 240, 480, 1440] # Added more options
+EXPIRY_LABELS = {
+    5: "5 Minute", 15: "15 Minute", 30: "30 Minute", 60: "1 Hour", 120: "2 Hour",
+    240: "4 Hour", 480: "8 Hour", 1440: "1 Day"
+}
+
+# === PRICING ENGINE & VOLATILITY SETTINGS ===
+RISK_FREE_RATE = 0.05
+MIN_VOLATILITY = 0.15
+MAX_VOLATILITY = 3.00
+DEFAULT_VOLATILITY = 0.80
+VOLATILITY_EWMA_ALPHA = 0.06
+VOLATILITY_REGIME_MULTIPLIER_LOW = 0.85
+VOLATILITY_REGIME_MULTIPLIER_MEDIUM = 1.00
+VOLATILITY_REGIME_MULTIPLIER_HIGH = 1.25
+VOLATILITY_SHORT_EXPIRY_ADJUSTMENTS = {
+    5: 1.50, 15: 1.30, 30: 1.15, 60: 1.05, 120: 1.02
+}
+VOLATILITY_DEFAULT_SHORT_EXPIRY_ADJUSTMENT = 1.0
+VOLATILITY_SMILE_CURVATURE = 0.15
+VOLATILITY_SKEW_FACTOR = -0.10
+MIN_SMILE_ADJUSTMENT_FACTOR = 0.70
+MAX_SMILE_ADJUSTMENT_FACTOR = 1.50
+VOLATILITY_GARCH_ENABLED = False
+
+# === STRIKE GENERATION ===
+STRIKE_RANGES_BY_EXPIRY = {
+    5: {"num_one_side": 5, "step_pct": 0.005},
+    15: {"num_one_side": 7, "step_pct": 0.005},
+    30: {"num_one_side": 8, "step_pct": 0.01},
+    60: {"num_one_side": 10, "step_pct": 0.01},
+    120: {"num_one_side": 10, "step_pct": 0.015},
+    240: {"num_one_side": 12, "step_pct": 0.02},
+    480: {"num_one_side": 15, "step_pct": 0.03},
+    1440: {"num_one_side": 20, "step_pct": 0.04}
+}
+STRIKE_ROUNDING_NEAREST = 10
+PRICE_ROUNDING_DP = 2
+
+# === REVENUE ENGINE ===
+REVENUE_BASE_MARKUP_PERCENTAGE = 0.035
+STANDARD_METRICS_EXPIRY_MINUTES = 60
+ESTIMATED_DAILY_CONTRACTS_SOLD = 150
+
+# === BOT TRADER SIMULATOR ===
+TRADER_DIST_ADV_PCT = 50.0
+TRADER_DIST_INT_PCT = 35.0
+TRADER_DIST_BEG_PCT = 15.0
+BASE_TOTAL_SIMULATED_TRADERS = 50
+TRADER_COUNT_ADV = int(BASE_TOTAL_SIMULATED_TRADERS * (TRADER_DIST_ADV_PCT / 100))
+TRADER_COUNT_INT = int(BASE_TOTAL_SIMULATED_TRADERS * (TRADER_DIST_INT_PCT / 100))
+TRADER_COUNT_BEG = BASE_TOTAL_SIMULATED_TRADERS - TRADER_COUNT_ADV - TRADER_COUNT_INT
+BOT_SIM_LOOP_MIN_SLEEP_SEC = 50
+BOT_SIM_LOOP_MAX_SLEEP_SEC = 70
+MAX_RECENT_TRADES_LOG_SIZE_BOTSIM = 250
+BOT_OTM_MIN_FACTOR = 0.005
+# Max OTM factors for different bot types
+BOT_OTM_MAX_FACTORS = {
+    "Beginner": 0.07, "Intermediate": 0.05, "Advanced": 0.03
+}
+
+# === HEDGE FEED MANAGER & POSITION MANAGER ===
+MAX_PLATFORM_NET_DELTA_BTC = 0.5
+HEDGE_LOOP_MIN_SLEEP_SEC = 8
+HEDGE_LOOP_MAX_SLEEP_SEC = 25
+HEDGE_PROBABILISTIC_TRIGGER_PCT = 0.05
+HEDGE_DELTA_PROPORTION_MIN = 0.6
+HEDGE_DELTA_PROPORTION_MAX = 0.9
+HEDGE_MIN_SIZE_BTC = 0.01
+HEDGE_MAX_SIZE_BTC = 2.5
+HEDGE_NON_DELTA_MAX_SIZE_BTC = 0.5
+HEDGE_QUANTITY_ROUNDING_DP = 4
+HEDGE_INSTRUMENT_SPOT = "BTC-SPOT"
+HEDGE_INSTRUMENT_PERP = "BTC-PERP"
+HEDGE_SLIPPAGE_MIN_PCT = -0.0003
+HEDGE_SLIPPAGE_MAX_PCT = 0.0003
+HEDGE_TRANSACTION_FEE_PCT = 0.0005
+
+EXCHANGE_NAME_COINBASE_PRO = "Coinbase Pro"
+EXCHANGE_NAME_KRAKEN = "Kraken"
+EXCHANGE_NAME_OKX = "OKX"
+EXCHANGE_NAME_DERIBIT = "Deribit"
+
+HEDGE_EXCHANGE_WEIGHTS = { # Use string keys matching Exchange Enum values for easy lookup
+    EXCHANGE_NAME_COINBASE_PRO: 0.4,
+    EXCHANGE_NAME_KRAKEN: 0.25,
+    EXCHANGE_NAME_OKX: 0.20,
+    EXCHANGE_NAME_DERIBIT: 0.15
+}
+HEDGE_EXECUTION_TIMES_MS = {
+    EXCHANGE_NAME_COINBASE_PRO: 180, EXCHANGE_NAME_KRAKEN: 220,
+    EXCHANGE_NAME_OKX: 150, EXCHANGE_NAME_DERIBIT: 120,
+    "Simulated Internal": 10 # If you add this enum
+}
+MAX_RECENT_HEDGES_LOG_SIZE = 150
+
+# === LIQUIDITY MANAGER ===
+LM_INITIAL_TOTAL_POOL_USD = 1500000.0
+LM_INITIAL_ACTIVE_USERS = BASE_TOTAL_SIMULATED_TRADERS # Link to bot sim total
+LM_BASE_LIQUIDITY_PER_USER_USD = 10000.0
+LM_VOLUME_FACTOR_PER_USER_USD = 500.0
+LM_OPTIONS_EXPOSURE_FACTOR = 0.25
+LM_STRESS_TEST_BUFFER_PCT = 0.20
+LM_MIN_LIQUIDITY_RATIO = 1.1
+LM_PROFIT_ALLOCATION_PCT = 0.05 # 5% of profits to reserve or payout
+LM_OPERATIONS_ALLOCATION_PCT = 0.10 # 10% of profits to operations
+LM_LIQUIDITY_REINVESTMENT_PCT = 0.85 # 85% of profits back to liquidity
+
+# === RISK MANAGEMENT ===
+MAX_SINGLE_USER_EXPOSURE_BTC = 10.0 # Reconsider if this is per user or overall
+MARGIN_REQUIREMENT_MULTIPLIER = 1.5 # For internal calculations if any
+
+# === ALPHA SIGNAL & ML SETTINGS ===
+ALPHA_SIGNALS_ENABLED = False
+BAR_PORTION_LOOKBACK = 20 # For TA features if used by alpha
+REGIME_DETECTION_LOOKBACK = 100 # For VolatilityEngine
+MACD_FAST = 12; MACD_SLOW = 26; MACD_SIGNAL = 9
+REGIME_TRAINING_INTERVAL = 1000 # if vol regime models are retrained
+SENTIMENT_ANALYSIS_ENABLED = False
+USE_RL_HEDGER = False
+USE_ML_VOLATILITY = False # Feature flag for alternative vol model
+REGIME_DETECTION_ENABLED = True # Master switch for VolatilityEngine's regime use
+
+# === LOGGING & DATABASE ===
+LOG_LEVEL = "INFO" # Change to "DEBUG" for development
+LOG_FILE = "logs/atticus_platform.log"
+DATABASE_URL = "sqlite:///./atticus_platform_data.db"
+
+# === MISC ===
+ATTICUS_BACKGROUND_TASK_INTERVAL = 30 # Interval for less frequent background tasks if any
 
 # === CONFIGURATION HELPERS ===
-def get_config_value(key: str, default=None):
-    """Helper function to get config values with defaults."""
+def get_config_value(key: str, default: Any = None) -> Any:
     return globals().get(key, default)
 
-def update_config(key: str, value):
-    """Helper function to update config values at runtime (use with caution)."""
+def update_config(key: str, value: Any):
     globals()[key] = value
+    config_logger.info(f"CONFIG: Updated '{key}' to '{value}' at runtime.") # Use config_logger
 
 # === ENVIRONMENT-BASED OVERRIDES ===
-# This section allows overriding config values using environment variables
-# E.g., ATTICUS_RISK_FREE_RATE=0.04 will override RISK_FREE_RATE
-# Ensure environment variable names are prefixed with "ATTICUS_"
-for key, value in globals().copy().items():
-    if key.isupper() and isinstance(value, (str, int, float, bool, list, dict)): # Added dict support
-        env_value = os.environ.get(f"ATTICUS_{key}")
-        if env_value is not None:
-            current_value = globals()[key]
+config_logger.info("CONFIG: Checking for environment variable overrides...") # Use config_logger
+_PREFIX = "ATTICUS_"
+for key, current_value in list(globals().items()): # Use list(globals().items()) for safe iteration
+    if key.isupper() and isinstance(current_value, (str, int, float, bool, list, dict)):
+        env_key = f"{_PREFIX}{key}"
+        env_value_str = os.environ.get(env_key)
+        if env_value_str is not None:
             try:
+                new_value: Any # Define type hint
                 if isinstance(current_value, bool):
-                    globals()[key] = env_value.lower() in ('true', '1', 'yes', 'on')
+                    new_value = env_value_str.lower() in ('true', '1', 'yes', 'on')
                 elif isinstance(current_value, int):
-                    globals()[key] = int(env_value)
+                    new_value = int(env_value_str)
                 elif isinstance(current_value, float):
-                    globals()[key] = float(env_value)
-                elif isinstance(current_value, list):
-                    # Assumes comma-separated values for lists, may need more robust parsing for complex lists
-                    globals()[key] = [item.strip() for item in env_value.split(',')]
-                elif isinstance(current_value, dict):
-                    # For dicts, expects a JSON string in the env var.
-                    import json
-                    globals()[key] = json.loads(env_value)
-                else: # Handles string type
-                    globals()[key] = env_value
-            except (ValueError, TypeError, json.JSONDecodeError) as e: # Added JSONDecodeError
-                print(f"Warning: Could not cast env var ATTICUS_{key}='{env_value}' to type {type(current_value)}. Error: {e}")
+                    new_value = float(env_value_str)
+                elif isinstance(current_value, list): # Simple CSV to list
+                    new_value = [item.strip() for item in env_value_str.split(',')]
+                elif isinstance(current_value, dict): # Expect JSON string for dict
+                    new_value = json.loads(env_value_str)
+                else: # String
+                    new_value = env_value_str
+                
+                globals()[key] = new_value
+                config_logger.info(f"CONFIG: Overrode '{key}' with env var '{env_key}' = '{new_value}' (was '{current_value}')") # Use config_logger
+            except (ValueError, TypeError, json.JSONDecodeError) as e:
+                config_logger.warning(f"CONFIG: Could not cast env var {env_key}='{env_value_str}' to type {type(current_value)}. Error: {e}") # Use config_logger
+config_logger.info("CONFIG: Environment variable override check complete.") # Use config_logger
+
+TRADE_SIMULATION_INTERVAL_SECONDS = 30  # Bot trader checks for new trades every 30 seconds

@@ -1,32 +1,33 @@
 # investor_dashboard/__init__.py
 
 """
-Atticus Investor Dashboard Backend
+Investor Dashboard Package for Atticus Platform
 
-This module provides investor-focused analytics and controls for the BTC options platform.
+This package contains all investor-facing dashboard components including
+revenue tracking, liquidity management, position management, and trading simulation.
 """
 
 __version__ = "1.0.0"
 __author__ = "Atticus Team"
 
+# Import the main classes from this package
+from .audit_engine import AuditEngine
 from .revenue_engine import RevenueEngine, RevenueMetrics
+from .position_manager import PositionManager
 from .liquidity_manager import LiquidityManager, LiquidityStatus
-from .bot_trader_simulator import BotTraderSimulator, BotTrade, TraderActivity
-from .audit_engine import AuditEngine, AuditMetrics
-from .hedge_feed_manager import HedgeFeedManager, HedgeExecution
-from .dashboard_api import router as dashboard_router
+from .hedge_feed_manager import HedgeFeedManager
+from .bot_trader_simulator import BotTraderSimulator, EnrichedTradeData, TraderType  # FIXED: Changed TraderActivity to TraderType
 
+# Define the public API
 __all__ = [
-    "RevenueEngine",
-    "RevenueMetrics", 
-    "LiquidityManager",
-    "LiquidityStatus",
-    "BotTraderSimulator",
-    "BotTrade",
-    "TraderActivity",
     "AuditEngine",
-    "AuditMetrics",
-    "HedgeFeedManager", 
-    "HedgeExecution",
-    "dashboard_router"
+    "RevenueEngine", 
+    "RevenueMetrics",
+    "PositionManager",
+    "LiquidityManager",
+    "LiquidityStatus", 
+    "HedgeFeedManager",
+    "BotTraderSimulator",
+    "EnrichedTradeData",
+    "TraderType"  # FIXED: Changed from TraderActivity to TraderType
 ]

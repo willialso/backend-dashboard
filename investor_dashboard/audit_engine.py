@@ -1,225 +1,183 @@
 # investor_dashboard/audit_engine.py
 
 import time
-from dataclasses import dataclass
-from typing import Dict, List
+from dataclasses import dataclass, field
+from typing import Dict, List, Optional, Any
 from collections import defaultdict
+import random
+import logging
+
+from backend import config # Import your config
+
+logger = logging.getLogger(__name__)
 
 @dataclass
 class AuditMetrics:
-    revenue_24h: float
-    trades_24h: int
-    total_pnl_24h: float
-    hedge_efficiency_pct: float
+    gross_option_premiums_24h_usd: float
+    net_hedging_pnl_24h_usd: float
+    operational_costs_24h_usd: float
+    option_trades_executed_24h: int # Number of option trades executed
+    net_platform_pnl_24h_usd: float   # Net Platform P&L
+    avg_hedge_efficiency_pct: Optional[float] # Optional if hard to calculate
     platform_uptime_pct: float
     compliance_status: str
-    avg_response_time_ms: float
-    error_rate_pct: float
+    avg_api_response_time_ms: float
+    api_error_rate_pct: float
 
 @dataclass
 class ComplianceCheck:
     check_name: str
-    status: str  # "PASS", "WARN", "FAIL"
-    value: float
-    threshold: float
-    last_check: float
+    status: str
+    value: Optional[Any] # Can be float, str, etc.
+    threshold: Optional[Any]
+    last_check_timestamp: float
+    details: Optional[str] = None
 
 class AuditEngine:
-    """Tracks platform performance and compliance metrics."""
-    
     def __init__(self):
         self.start_time = time.time()
-        self.total_downtime = 0.0
-        self.revenue_tracking = []
-        self.trade_tracking = []
-        self.response_times = []
-        self.error_count = 0
-        self.total_requests = 0
+        self.total_downtime_seconds = 0.0
         
-        # Compliance thresholds
-        self.compliance_thresholds = {
-            "max_single_exposure_btc": 10.0,
-            "max_platform_delta_btc": 100.0,
-            "min_liquidity_ratio": 1.2,
-            "max_downtime_pct": 0.1,
-            "max_response_time_ms": 500,
-            "max_error_rate_pct": 1.0
-        }
-        
-    def track_revenue(self, amount: float):
-        """Track revenue transaction."""
-        self.revenue_tracking.append({
-            "amount": amount,
+        self.option_premium_records: List[Dict[str, Any]] = []
+        self.hedging_pnl_records: List[Dict[str, Any]] = []
+        self.operational_cost_records: List[Dict[str, Any]] = []
+        self.option_trade_execution_records: List[Dict[str, Any]] = []
+        self.api_response_time_records: List[Dict[str, Any]] = []
+        self.api_error_count = 0
+        self.total_api_requests = 0
+        logger.info("AuditEngine initialized.")
+
+    def track_option_premium(self, amount: float, trade_id: Optional[str] = None, is_credit: bool = True):
+        signed_amount = amount if is_credit else -amount
+        self.option_premium_records.append({
+            "amount_usd": signed_amount, "trade_id": trade_id, "timestamp": time.time()
+        })
+        logger.debug(f"AE: Tracked option premium: ${signed_amount:.2f} for trade {trade_id}")
+
+    def track_hedging_activity(self, pnl_usd: float, cost_usd: float, hedge_id: Optional[str] = None, risk_reduction_metric: Optional[float]=None):
+        """Tracks P&L and cost of a hedging activity."""
+        self.hedging_pnl_records.append({
+            "pnl_usd": pnl_usd, # Realized or MTM PNL of the hedge itself
+            "cost_usd": cost_usd, # Transaction costs for the hedge
+            "net_effect_usd": pnl_usd - cost_usd,
+            "hedge_id": hedge_id,
+            "risk_reduction_metric": risk_reduction_metric, # e.g., Delta reduced
             "timestamp": time.time()
         })
-        
-    def track_trade(self, trade_details: Dict):
-        """Track completed trade."""
-        self.trade_tracking.append({
-            "details": trade_details,
-            "timestamp": time.time()
+        logger.debug(f"AE: Tracked hedge activity: PNL=${pnl_usd:.2f}, Cost=${cost_usd:.2f} for hedge {hedge_id}")
+    
+    def track_operational_cost(self, amount_usd: float, description: Optional[str] = None):
+        self.operational_cost_records.append({
+            "amount_usd": amount_usd, "description": description, "timestamp": time.time()
         })
-        
-    def track_response_time(self, response_time_ms: float):
-        """Track API response time."""
-        self.response_times.append({
-            "time_ms": response_time_ms,
-            "timestamp": time.time()
+        logger.debug(f"AE: Tracked OpCost: ${amount_usd:.2f} for {description}")
+
+    def track_option_trade_executed(self, trade_id: Optional[str] = None):
+        self.option_trade_execution_records.append({
+            "trade_id": trade_id, "timestamp": time.time()
         })
-        self.total_requests += 1
-        
-    def track_error(self):
-        """Track system error occurrence."""
-        self.error_count += 1
-        
-    def track_downtime(self, downtime_seconds: float):
-        """Track system downtime."""
-        self.total_downtime += downtime_seconds
-        
+
+    def track_api_response(self, response_time_ms: float, endpoint: str, success: bool):
+        self.api_response_time_records.append({
+            "time_ms": response_time_ms, "endpoint": endpoint, "timestamp": time.time()
+        })
+        self.total_api_requests += 1
+        if not success:
+            self.api_error_count += 1
+
+    def track_downtime_event(self, duration_seconds: float):
+        self.total_downtime_seconds += duration_seconds
+
     def get_24h_metrics(self) -> AuditMetrics:
-        """Get 24-hour audit metrics."""
         current_time = time.time()
         cutoff_24h = current_time - (24 * 60 * 60)
+
+        premiums_24h = sum(r["amount_usd"] for r in self.option_premium_records if r["timestamp"] >= cutoff_24h)
         
-        # Revenue in last 24 hours
-        recent_revenue = [
-            r["amount"] for r in self.revenue_tracking 
-            if r["timestamp"] > cutoff_24h
-        ]
-        revenue_24h = sum(recent_revenue)
+        hedging_net_effect_24h = sum(r["net_effect_usd"] for r in self.hedging_pnl_records if r["timestamp"] >= cutoff_24h)
         
-        # Trades in last 24 hours
-        recent_trades = [
-            t for t in self.trade_tracking 
-            if t["timestamp"] > cutoff_24h
-        ]
-        trades_24h = len(recent_trades)
+        op_costs_24h = sum(r["amount_usd"] for r in self.operational_cost_records if r["timestamp"] >= cutoff_24h)
         
-        # Calculate P&L (simplified)
-        total_pnl_24h = revenue_24h * 0.85  # Assume 85% profit margin
+        option_trades_24h = len([r for r in self.option_trade_execution_records if r["timestamp"] >= cutoff_24h])
+
+        net_platform_pnl_24h = premiums_24h + hedging_net_effect_24h - op_costs_24h
         
-        # Platform uptime
-        total_runtime = current_time - self.start_time
-        uptime_pct = ((total_runtime - self.total_downtime) / total_runtime) * 100 if total_runtime > 0 else 100
+        total_runtime_seconds = current_time - self.start_time
+        uptime_pct = ((total_runtime_seconds - self.total_downtime_seconds) / total_runtime_seconds) * 100 if total_runtime_seconds > 0 else 100.0
         
-        # Response time (last hour)
-        cutoff_1h = current_time - 3600
-        recent_response_times = [
-            r["time_ms"] for r in self.response_times 
-            if r["timestamp"] > cutoff_1h
-        ]
-        avg_response_time = sum(recent_response_times) / len(recent_response_times) if recent_response_times else 0
+        responses_1h = [r["time_ms"] for r in self.api_response_time_records if r["timestamp"] >= current_time - 3600]
+        avg_api_response_ms = sum(responses_1h) / len(responses_1h) if responses_1h else 0.0
         
-        # Error rate
-        error_rate = (self.error_count / self.total_requests) * 100 if self.total_requests > 0 else 0
-        
-        # Hedge efficiency (simulated based on market conditions)
-        hedge_efficiency = self._calculate_hedge_efficiency()
-        
-        # Compliance status
-        compliance_status = self._check_compliance_status()
-        
+        api_error_rate_pct = (self.api_error_count / self.total_api_requests) * 100 if self.total_api_requests > 0 else 0.0
+
+        # Hedge efficiency calculation is complex and requires linking hedge cost/P&L to actual risk reduction.
+        # For now, a placeholder or simple ratio.
+        total_hedge_costs_24h = sum(r["cost_usd"] for r in self.hedging_pnl_records if r["timestamp"] >= cutoff_24h)
+        # A true efficiency needs |delta_reduced_value| / |hedge_cost_or_pnl_impact|
+        avg_hedge_efficiency = None # Placeholder - needs more data
+        if total_hedge_costs_24h > 0 and hedging_net_effect_24h != 0: # Avoid division by zero
+             # This is a very rough proxy: PNL relative to costs.
+             # If PNL is positive (hedges made money), efficiency is high.
+             # If PNL is negative but small relative to costs, still okay if risk reduced.
+             # avg_hedge_efficiency = (hedging_net_effect_24h / total_hedge_costs_24h) * 100 # Not quite right
+             pass # Needs better metric
+
+        compliance_status_str = self._check_compliance_status_with_placeholders()
+
         return AuditMetrics(
-            revenue_24h=revenue_24h,
-            trades_24h=trades_24h,
-            total_pnl_24h=total_pnl_24h,
-            hedge_efficiency_pct=hedge_efficiency,
-            platform_uptime_pct=uptime_pct,
-            compliance_status=compliance_status,
-            avg_response_time_ms=avg_response_time,
-            error_rate_pct=error_rate
+            gross_option_premiums_24h_usd=round(premiums_24h, 2),
+            net_hedging_pnl_24h_usd=round(hedging_net_effect_24h, 2),
+            operational_costs_24h_usd=round(op_costs_24h, 2),
+            option_trades_executed_24h=option_trades_24h,
+            net_platform_pnl_24h_usd=round(net_platform_pnl_24h, 2),
+            avg_hedge_efficiency_pct=avg_hedge_efficiency, # Could be None
+            platform_uptime_pct=round(max(0, min(100, uptime_pct)), 2),
+            compliance_status=compliance_status_str,
+            avg_api_response_time_ms=round(avg_api_response_ms, 2),
+            api_error_rate_pct=round(api_error_rate_pct, 2)
         )
-    
-    def _calculate_hedge_efficiency(self) -> float:
-        """Calculate hedging efficiency percentage."""
-        # Simplified calculation - in real system would use actual hedge data
-        import random
-        
-        # Simulate realistic hedge efficiency (92-98%)
-        base_efficiency = 94.5
-        market_volatility_factor = random.uniform(-2, 2)
-        return max(90, min(98, base_efficiency + market_volatility_factor))
-    
-    def _check_compliance_status(self) -> str:
-        """Check overall compliance status."""
-        compliance_checks = self.run_compliance_checks()
-        
-        failed_checks = [c for c in compliance_checks if c.status == "FAIL"]
-        warning_checks = [c for c in compliance_checks if c.status == "WARN"]
-        
-        if failed_checks:
-            return "NON_COMPLIANT"
-        elif warning_checks:
-            return "WARNING"
-        else:
-            return "COMPLIANT"
-    
-    def run_compliance_checks(self) -> List[ComplianceCheck]:
-        """Run all compliance checks."""
+
+    def _check_compliance_status_with_placeholders(self) -> str: # Renamed to be clear
+        # This should ideally query PositionManager for live delta, LiquidityManager for ratio etc.
+        # For now, uses config thresholds and simulates values.
+        checks = self.run_compliance_checks_with_placeholders() # Uses config thresholds
+        if any(c.status == "FAIL" for c in checks): return "NON_COMPLIANT"
+        if any(c.status == "WARN" for c in checks): return "WARNING"
+        return "COMPLIANT"
+
+    def run_compliance_checks_with_placeholders(self) -> List[ComplianceCheck]:
         checks = []
-        current_time = time.time()
+        ct = time.time()
+        # Actual values should be fetched from relevant managers (PositionManager, LiquidityManager)
+        # Simulating values for now:
+        sim_delta = random.uniform(-config.MAX_PLATFORM_NET_DELTA_BTC * 1.2, config.MAX_PLATFORM_NET_DELTA_BTC * 1.2)
+        sim_liq_ratio = random.uniform(config.MIN_LIQUIDITY_RATIO * 0.8, config.MIN_LIQUIDITY_RATIO * 1.5)
         
-        # Uptime check
-        total_runtime = current_time - self.start_time
-        uptime_pct = ((total_runtime - self.total_downtime) / total_runtime) * 100 if total_runtime > 0 else 100
-        downtime_pct = 100 - uptime_pct
-        
-        checks.append(ComplianceCheck(
-            check_name="Platform Uptime",
-            status="PASS" if downtime_pct <= self.compliance_thresholds["max_downtime_pct"] else "FAIL",
-            value=uptime_pct,
-            threshold=100 - self.compliance_thresholds["max_downtime_pct"],
-            last_check=current_time
-        ))
-        
-        # Response time check
-        cutoff_1h = current_time - 3600
-        recent_response_times = [
-            r["time_ms"] for r in self.response_times 
-            if r["timestamp"] > cutoff_1h
-        ]
-        avg_response_time = sum(recent_response_times) / len(recent_response_times) if recent_response_times else 0
-        
-        checks.append(ComplianceCheck(
-            check_name="Average Response Time",
-            status="PASS" if avg_response_time <= self.compliance_thresholds["max_response_time_ms"] else "WARN",
-            value=avg_response_time,
-            threshold=self.compliance_thresholds["max_response_time_ms"],
-            last_check=current_time
-        ))
-        
-        # Error rate check
-        error_rate = (self.error_count / self.total_requests) * 100 if self.total_requests > 0 else 0
-        
-        checks.append(ComplianceCheck(
-            check_name="Error Rate",
-            status="PASS" if error_rate <= self.compliance_thresholds["max_error_rate_pct"] else "WARN",
-            value=error_rate,
-            threshold=self.compliance_thresholds["max_error_rate_pct"],
-            last_check=current_time
-        ))
-        
+        checks.append(ComplianceCheck("Max Platform Delta (BTC)", 
+                                      "PASS" if abs(sim_delta) <= config.MAX_PLATFORM_NET_DELTA_BTC else "FAIL",
+                                      round(sim_delta,2), config.MAX_PLATFORM_NET_DELTA_BTC, ct))
+        checks.append(ComplianceCheck("Min Liquidity Ratio",
+                                      "PASS" if sim_liq_ratio >= config.MIN_LIQUIDITY_RATIO else "FAIL",
+                                      round(sim_liq_ratio,2), config.MIN_LIQUIDITY_RATIO, ct))
+        # ... (add internal checks like uptime, error rate from get_24h_metrics calculations)
+        metrics = self.get_24h_metrics() # Get current calculated metrics
+        checks.append(ComplianceCheck("Platform Uptime (%)",
+                                      "PASS" if metrics.platform_uptime_pct >= (100 - config.MAX_DOWNTIME_PCT) else "FAIL",
+                                      metrics.platform_uptime_pct, (100-config.MAX_DOWNTIME_PCT), ct))
+        checks.append(ComplianceCheck("API Error Rate (%)",
+                                      "PASS" if metrics.api_error_rate_pct <= config.MAX_ERROR_RATE_PCT else "WARN",
+                                      metrics.api_error_rate_pct, config.MAX_ERROR_RATE_PCT, ct))
         return checks
-    
-    def generate_audit_report(self) -> Dict:
-        """Generate comprehensive audit report."""
+
+    def generate_audit_report(self) -> Dict: # From your Attachment [1]
         metrics = self.get_24h_metrics()
-        compliance_checks = self.run_compliance_checks()
-        
+        compliance_checks_list = self.run_compliance_checks_with_placeholders()
+
         return {
             "report_timestamp": time.time(),
-            "metrics": metrics,
-            "compliance_checks": compliance_checks,
-            "summary": {
-                "overall_health": "HEALTHY" if metrics.compliance_status == "COMPLIANT" else "ATTENTION_REQUIRED",
-                "key_achievements": [
-                    f"${metrics.revenue_24h:,.2f} revenue in 24h",
-                    f"{metrics.trades_24h} trades completed",
-                    f"{metrics.platform_uptime_pct:.2f}% uptime"
-                ],
-                "areas_for_improvement": [
-                    c.check_name for c in compliance_checks 
-                    if c.status in ["WARN", "FAIL"]
-                ]
+            "metrics_24h": metrics.__dict__,
+            "compliance_summary": {
+                "overall_status": metrics.compliance_status,
+                "checks": [check.__dict__ for check in compliance_checks_list]
             }
         }
