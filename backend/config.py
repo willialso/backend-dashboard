@@ -3,40 +3,35 @@
 import os
 import json
 from typing import List, Dict, Any
-import logging # <<< ADD THIS IMPORT
+import logging
 
 # === LOGGER SETUP (MUST BE AT THE TOP BEFORE ANY LOGGER CALLS) ===
-# Configure a basic logger for the config file itself.
-# Other modules should get their own logger via logging.getLogger(__name__)
-config_logger = logging.getLogger(__name__) # Use a specific name for this logger
-# Set a basic configuration if no other logging is configured by main_dashboard.py yet
-# This is important if config.py is imported and executed before main_dashboard's logging setup.
-if not logging.getLogger().hasHandlers(): # Check if root logger has handlers
+config_logger = logging.getLogger(__name__)
+
+if not logging.getLogger().hasHandlers():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s - CONFIG - %(levelname)s - %(message)s")
+
 # =================================================================
 
 # === CORE PLATFORM SETTINGS ===
 PLATFORM_NAME = "Atticus"
-VERSION = "2.3.1" # Incremented version for this fix
+VERSION = "2.3.1"
 DEMO_MODE = True
 DEBUG_MODE = True
 
 # === API & SERVER SETTINGS ===
-# For Render/Docker, 0.0.0.0 is usually better than localhost.
-# For local dev, "localhost" or "127.0.0.1" is fine.
-# Let's make 0.0.0.0 the default for wider compatibility.
 API_HOST = os.environ.get("API_HOST", "0.0.0.0")
-API_PORT = int(os.environ.get("PORT", 8001)) # Render uses PORT, default to 8001 as in your main_dashboard
-
-LOVABLE_PREVIEW_URL = "https://preview--atticus-insight-hub.lovable.app" # FROM LATEST ERRORS
+API_PORT = int(os.environ.get("PORT", 8001))
+LOVABLE_PREVIEW_URL = "https://preview--atticus-insight-hub.lovable.app"
 CORS_ORIGINS = [
     "http://localhost:3000",
     "http://127.0.0.1:3000",
-    "http://localhost:5173", # Common Vite/React dev port
+    "http://localhost:5173",
     "http://127.0.0.1:5173",
     LOVABLE_PREVIEW_URL,
-    "https://atticus-insight-hub.lovable.app", # Assumed production
+    "https://atticus-insight-hub.lovable.app",
 ]
+
 RENDER_BACKEND_URL = "https://atticus-demo-dashboard.onrender.com"
 if RENDER_BACKEND_URL and RENDER_BACKEND_URL not in CORS_ORIGINS:
     CORS_ORIGINS.append(RENDER_BACKEND_URL)
@@ -56,14 +51,14 @@ EXCHANGES_ENABLED = ["okx", "coinbase", "kraken"]
 PRIMARY_EXCHANGE = "okx"
 DATA_BROADCAST_INTERVAL_SECONDS = 1.0
 PRICE_HISTORY_MAX_POINTS = 10000
-PRICE_CHANGE_THRESHOLD_FOR_BROADCAST = 0.0001 # 0.01% change
+PRICE_CHANGE_THRESHOLD_FOR_BROADCAST = 0.0001
 
 # === CONTRACT SPECIFICATIONS ===
 STANDARD_CONTRACT_SIZE_BTC = 0.1
 CONTRACT_SIZES_AVAILABLE = [0.01, 0.1, 1.0]
 
 # === EXPIRY CONFIGURATIONS ===
-AVAILABLE_EXPIRIES_MINUTES = [5, 15, 30, 60, 120, 240, 480, 1440] # Added more options
+AVAILABLE_EXPIRIES_MINUTES = [5, 15, 30, 60, 120, 240, 480, 1440]
 EXPIRY_LABELS = {
     5: "5 Minute", 15: "15 Minute", 30: "30 Minute", 60: "1 Hour", 120: "2 Hour",
     240: "4 Hour", 480: "8 Hour", 1440: "1 Day"
@@ -119,10 +114,12 @@ BOT_SIM_LOOP_MIN_SLEEP_SEC = 50
 BOT_SIM_LOOP_MAX_SLEEP_SEC = 70
 MAX_RECENT_TRADES_LOG_SIZE_BOTSIM = 250
 BOT_OTM_MIN_FACTOR = 0.005
-# Max OTM factors for different bot types
 BOT_OTM_MAX_FACTORS = {
     "Beginner": 0.07, "Intermediate": 0.05, "Advanced": 0.03
 }
+
+# === BOT TRADING CONFIGURATION (FIXED MISSING VARIABLE) ===
+TRADE_SIMULATION_INTERVAL_SECONDS = 30  # Bot trader checks for new trades every 30 seconds
 
 # === HEDGE FEED MANAGER & POSITION MANAGER ===
 MAX_PLATFORM_NET_DELTA_BTC = 0.5
@@ -140,13 +137,11 @@ HEDGE_INSTRUMENT_PERP = "BTC-PERP"
 HEDGE_SLIPPAGE_MIN_PCT = -0.0003
 HEDGE_SLIPPAGE_MAX_PCT = 0.0003
 HEDGE_TRANSACTION_FEE_PCT = 0.0005
-
 EXCHANGE_NAME_COINBASE_PRO = "Coinbase Pro"
 EXCHANGE_NAME_KRAKEN = "Kraken"
 EXCHANGE_NAME_OKX = "OKX"
 EXCHANGE_NAME_DERIBIT = "Deribit"
-
-HEDGE_EXCHANGE_WEIGHTS = { # Use string keys matching Exchange Enum values for easy lookup
+HEDGE_EXCHANGE_WEIGHTS = {
     EXCHANGE_NAME_COINBASE_PRO: 0.4,
     EXCHANGE_NAME_KRAKEN: 0.25,
     EXCHANGE_NAME_OKX: 0.20,
@@ -155,44 +150,54 @@ HEDGE_EXCHANGE_WEIGHTS = { # Use string keys matching Exchange Enum values for e
 HEDGE_EXECUTION_TIMES_MS = {
     EXCHANGE_NAME_COINBASE_PRO: 180, EXCHANGE_NAME_KRAKEN: 220,
     EXCHANGE_NAME_OKX: 150, EXCHANGE_NAME_DERIBIT: 120,
-    "Simulated Internal": 10 # If you add this enum
+    "Simulated Internal": 10
 }
 MAX_RECENT_HEDGES_LOG_SIZE = 150
 
-# === LIQUIDITY MANAGER ===
+# === LIQUIDITY MANAGER (FIXED MISSING VARIABLES) ===
 LM_INITIAL_TOTAL_POOL_USD = 1500000.0
-LM_INITIAL_ACTIVE_USERS = BASE_TOTAL_SIMULATED_TRADERS # Link to bot sim total
+LM_INITIAL_ACTIVE_USERS = BASE_TOTAL_SIMULATED_TRADERS
 LM_BASE_LIQUIDITY_PER_USER_USD = 10000.0
 LM_VOLUME_FACTOR_PER_USER_USD = 500.0
 LM_OPTIONS_EXPOSURE_FACTOR = 0.25
 LM_STRESS_TEST_BUFFER_PCT = 0.20
-LM_MIN_LIQUIDITY_RATIO = 1.1
-LM_PROFIT_ALLOCATION_PCT = 0.05 # 5% of profits to reserve or payout
-LM_OPERATIONS_ALLOCATION_PCT = 0.10 # 10% of profits to operations
-LM_LIQUIDITY_REINVESTMENT_PCT = 0.85 # 85% of profits back to liquidity
+LM_MIN_LIQUIDITY_RATIO = 0.20  # FIXED: Added missing variable
+LM_MAX_LIQUIDITY_RATIO = 0.80  # FIXED: Added missing variable
+MIN_LIQUIDITY_RATIO = 0.20     # FIXED: Added missing variable for audit engine
+MAX_LIQUIDITY_RATIO = 0.80     # FIXED: Added missing variable for audit engine
+LM_PROFIT_ALLOCATION_PCT = 0.05
+LM_OPERATIONS_ALLOCATION_PCT = 0.10
+LM_LIQUIDITY_REINVESTMENT_PCT = 0.85
+
+# === AUDIT ENGINE CONFIGURATION (FIXED MISSING VARIABLES) ===
+AUDIT_ENABLED = True
+AUDIT_LOG_RETENTION_DAYS = 90
+AUDIT_COMPLIANCE_THRESHOLD = 95.0
+AUDIT_CRITICAL_ISSUE_THRESHOLD = 0
+AUDIT_WARNING_THRESHOLD = 5
 
 # === RISK MANAGEMENT ===
-MAX_SINGLE_USER_EXPOSURE_BTC = 10.0 # Reconsider if this is per user or overall
-MARGIN_REQUIREMENT_MULTIPLIER = 1.5 # For internal calculations if any
+MAX_SINGLE_USER_EXPOSURE_BTC = 10.0
+MARGIN_REQUIREMENT_MULTIPLIER = 1.5
 
 # === ALPHA SIGNAL & ML SETTINGS ===
 ALPHA_SIGNALS_ENABLED = False
-BAR_PORTION_LOOKBACK = 20 # For TA features if used by alpha
-REGIME_DETECTION_LOOKBACK = 100 # For VolatilityEngine
+BAR_PORTION_LOOKBACK = 20
+REGIME_DETECTION_LOOKBACK = 100
 MACD_FAST = 12; MACD_SLOW = 26; MACD_SIGNAL = 9
-REGIME_TRAINING_INTERVAL = 1000 # if vol regime models are retrained
+REGIME_TRAINING_INTERVAL = 1000
 SENTIMENT_ANALYSIS_ENABLED = False
 USE_RL_HEDGER = False
-USE_ML_VOLATILITY = False # Feature flag for alternative vol model
-REGIME_DETECTION_ENABLED = True # Master switch for VolatilityEngine's regime use
+USE_ML_VOLATILITY = False
+REGIME_DETECTION_ENABLED = True
 
 # === LOGGING & DATABASE ===
-LOG_LEVEL = "INFO" # Change to "DEBUG" for development
+LOG_LEVEL = "INFO"
 LOG_FILE = "logs/atticus_platform.log"
 DATABASE_URL = "sqlite:///./atticus_platform_data.db"
 
 # === MISC ===
-ATTICUS_BACKGROUND_TASK_INTERVAL = 30 # Interval for less frequent background tasks if any
+ATTICUS_BACKGROUND_TASK_INTERVAL = 30
 
 # === CONFIGURATION HELPERS ===
 def get_config_value(key: str, default: Any = None) -> Any:
@@ -200,35 +205,36 @@ def get_config_value(key: str, default: Any = None) -> Any:
 
 def update_config(key: str, value: Any):
     globals()[key] = value
-    config_logger.info(f"CONFIG: Updated '{key}' to '{value}' at runtime.") # Use config_logger
+    config_logger.info(f"CONFIG: Updated '{key}' to '{value}' at runtime.")
 
 # === ENVIRONMENT-BASED OVERRIDES ===
-config_logger.info("CONFIG: Checking for environment variable overrides...") # Use config_logger
+config_logger.info("CONFIG: Checking for environment variable overrides...")
+
 _PREFIX = "ATTICUS_"
-for key, current_value in list(globals().items()): # Use list(globals().items()) for safe iteration
+for key, current_value in list(globals().items()):
     if key.isupper() and isinstance(current_value, (str, int, float, bool, list, dict)):
         env_key = f"{_PREFIX}{key}"
         env_value_str = os.environ.get(env_key)
         if env_value_str is not None:
             try:
-                new_value: Any # Define type hint
+                new_value: Any
                 if isinstance(current_value, bool):
                     new_value = env_value_str.lower() in ('true', '1', 'yes', 'on')
                 elif isinstance(current_value, int):
                     new_value = int(env_value_str)
                 elif isinstance(current_value, float):
                     new_value = float(env_value_str)
-                elif isinstance(current_value, list): # Simple CSV to list
+                elif isinstance(current_value, list):
                     new_value = [item.strip() for item in env_value_str.split(',')]
-                elif isinstance(current_value, dict): # Expect JSON string for dict
+                elif isinstance(current_value, dict):
                     new_value = json.loads(env_value_str)
-                else: # String
+                else:
                     new_value = env_value_str
-                
-                globals()[key] = new_value
-                config_logger.info(f"CONFIG: Overrode '{key}' with env var '{env_key}' = '{new_value}' (was '{current_value}')") # Use config_logger
-            except (ValueError, TypeError, json.JSONDecodeError) as e:
-                config_logger.warning(f"CONFIG: Could not cast env var {env_key}='{env_value_str}' to type {type(current_value)}. Error: {e}") # Use config_logger
-config_logger.info("CONFIG: Environment variable override check complete.") # Use config_logger
 
-TRADE_SIMULATION_INTERVAL_SECONDS = 30  # Bot trader checks for new trades every 30 seconds
+                globals()[key] = new_value
+                config_logger.info(f"CONFIG: Overrode '{key}' with env var '{env_key}' = '{new_value}' (was '{current_value}')")
+
+            except (ValueError, TypeError, json.JSONDecodeError) as e:
+                config_logger.warning(f"CONFIG: Could not cast env var {env_key}='{env_value_str}' to type {type(current_value)}. Error: {e}")
+
+config_logger.info("CONFIG: Environment variable override check complete.")
