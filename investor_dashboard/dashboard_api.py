@@ -86,129 +86,10 @@ class DebugPriceUpdate(BaseModel):
 class DebugModeToggle(BaseModel):
     enabled: bool
 
-# ← FIXED: ROBUST TRADING STATISTICS ENDPOINT
-@router.get("/trading-statistics")
-async def get_trading_statistics():
-    """Get comprehensive trading statistics - ROBUST VERSION FIXES 404 ERRORS."""
-    start_time = time.time()
-    
-    if not bot_trader_simulator:
-        log_api_call("trading-statistics", "error - not initialized")
-        raise HTTPException(status_code=503, detail="Bot trader simulator not initialized")
-    
-    try:
-        # Try the original method first
-        stats = None
-        error = None
-        
-        if hasattr(bot_trader_simulator, 'get_trading_statistics'):
-            stats, error = safe_component_call("bot_trader_simulator", bot_trader_simulator.get_trading_statistics)
-        
-        # If original method fails or doesn't exist, calculate from available data
-        if error or stats is None:
-            logger.info("💡 Calculating trading statistics from available data")
-            
-            # Get current trading activity
-            activities, activities_error = safe_component_call("bot_trader_simulator", bot_trader_simulator.get_current_activity)
-            
-            # Get recent trades for calculations
-            recent_trades, trades_error = safe_component_call("bot_trader_simulator", bot_trader_simulator.get_recent_trades, 100)
-            
-            if activities and not activities_error:
-                # Calculate statistics from activities and trades
-                total_traders = sum(activity.active_count for activity in activities)
-                
-                if recent_trades and not trades_error:
-                    # Calculate real statistics from recent trades
-                    total_trades = len(recent_trades)
-                    total_volume = sum(trade.premium_paid for trade in recent_trades)
-                    avg_premium = total_volume / total_trades if total_trades > 0 else 0
-                    
-                    # Calculate call/put ratio
-                    calls = len([t for t in recent_trades if t.option_type.lower() == 'call'])
-                    puts = len([t for t in recent_trades if t.option_type.lower() == 'put'])
-                    call_put_ratio = calls / puts if puts > 0 else 1.0
-                    
-                    # Find most popular expiry
-                    expiry_counts = {}
-                    for trade in recent_trades:
-                        expiry = trade.expiry_minutes
-                        expiry_counts[expiry] = expiry_counts.get(expiry, 0) + 1
-                    most_popular_expiry = max(expiry_counts.keys()) if expiry_counts else 60
-                    
-                    stats = {
-                        "total_traders": total_traders,
-                        "total_trades": total_trades,
-                        "total_volume_usd": total_volume,
-                        "avg_premium_paid": avg_premium,
-                        "call_put_ratio": call_put_ratio,
-                        "most_popular_expiry": most_popular_expiry,
-                        "trades_per_hour": sum(activity.trades_per_hour for activity in activities),
-                        "avg_success_rate": sum(activity.success_rate for activity in activities) / len(activities),
-                        "calculation_method": "calculated_from_recent_trades"
-                    }
-                else:
-                    # Fallback statistics based on activities only
-                    stats = {
-                        "total_traders": total_traders,
-                        "total_trades": 247,  # Estimate based on trader count
-                        "total_volume_usd": total_traders * 2500,  # Estimate
-                        "avg_premium_paid": 2500.0,
-                        "call_put_ratio": 1.78,
-                        "most_popular_expiry": 480,
-                        "trades_per_hour": sum(activity.trades_per_hour for activity in activities),
-                        "avg_success_rate": sum(activity.success_rate for activity in activities) / len(activities),
-                        "calculation_method": "estimated_from_activities"
-                    }
-            else:
-                # Complete fallback statistics
-                stats = {
-                    "total_traders": 242,
-                    "total_trades": 247,
-                    "total_volume_usd": 605500,
-                    "avg_premium_paid": 2450.0,
-                    "call_put_ratio": 1.78,
-                    "most_popular_expiry": 480,
-                    "trades_per_hour": 14,
-                    "avg_success_rate": 0.65,
-                    "calculation_method": "fallback_defaults"
-                }
-        
-        duration = (time.time() - start_time) * 1000
-        log_api_call("trading-statistics", "success", duration)
-        
-        # Add metadata to response
-        stats["timestamp"] = time.time()
-        stats["response_time_ms"] = duration
-        
-        return stats
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        duration = (time.time() - start_time) * 1000
-        log_api_call("trading-statistics", f"error - {str(e)}", duration)
-        
-        # Emergency fallback to prevent 404
-        return {
-            "total_traders": 242,
-            "total_trades": 247,
-            "total_volume_usd": 605500,
-            "avg_premium_paid": 2450.0,
-            "call_put_ratio": 1.78,
-            "most_popular_expiry": 480,
-            "trades_per_hour": 14,
-            "avg_success_rate": 0.65,
-            "error": str(e)[:100],
-            "calculation_method": "emergency_fallback",
-            "timestamp": time.time()
-        }
-
-# ← ALL YOUR EXISTING ENDPOINTS (keeping exactly as they are)
-
-@router.get("/export-csv")
+# ← FIXED: CSV EXPORT ENDPOINT - CHANGED FROM GET TO POST
+@router.post("/export-csv")  # ← CRITICAL FIX: Changed from GET to POST
 async def export_csv():
-    """Export current dashboard data to CSV file."""
+    """Export current dashboard data to CSV file - POST METHOD FOR LOVABLE COMPATIBILITY."""
     start_time = time.time()
     
     try:
@@ -437,6 +318,123 @@ async def reset_parameters():
         log_api_call("reset-parameters", f"error - {str(e)}", duration)
         raise HTTPException(status_code=500, detail=f"Error resetting parameters: {str(e)}")
 
+@router.get("/trading-statistics")
+async def get_trading_statistics():
+    """Get comprehensive trading statistics - ROBUST VERSION FIXES 404 ERRORS."""
+    start_time = time.time()
+    
+    if not bot_trader_simulator:
+        log_api_call("trading-statistics", "error - not initialized")
+        raise HTTPException(status_code=503, detail="Bot trader simulator not initialized")
+    
+    try:
+        # Try the original method first
+        stats = None
+        error = None
+        
+        if hasattr(bot_trader_simulator, 'get_trading_statistics'):
+            stats, error = safe_component_call("bot_trader_simulator", bot_trader_simulator.get_trading_statistics)
+        
+        # If original method fails or doesn't exist, calculate from available data
+        if error or stats is None:
+            logger.info("💡 Calculating trading statistics from available data")
+            
+            # Get current trading activity
+            activities, activities_error = safe_component_call("bot_trader_simulator", bot_trader_simulator.get_current_activity)
+            
+            # Get recent trades for calculations
+            recent_trades, trades_error = safe_component_call("bot_trader_simulator", bot_trader_simulator.get_recent_trades, 100)
+            
+            if activities and not activities_error:
+                # Calculate statistics from activities and trades
+                total_traders = sum(activity.active_count for activity in activities)
+                
+                if recent_trades and not trades_error:
+                    # Calculate real statistics from recent trades
+                    total_trades = len(recent_trades)
+                    total_volume = sum(trade.premium_paid for trade in recent_trades)
+                    avg_premium = total_volume / total_trades if total_trades > 0 else 0
+                    
+                    # Calculate call/put ratio
+                    calls = len([t for t in recent_trades if t.option_type.lower() == 'call'])
+                    puts = len([t for t in recent_trades if t.option_type.lower() == 'put'])
+                    call_put_ratio = calls / puts if puts > 0 else 1.0
+                    
+                    # Find most popular expiry
+                    expiry_counts = {}
+                    for trade in recent_trades:
+                        expiry = trade.expiry_minutes
+                        expiry_counts[expiry] = expiry_counts.get(expiry, 0) + 1
+                    most_popular_expiry = max(expiry_counts.keys()) if expiry_counts else 60
+                    
+                    stats = {
+                        "total_traders": total_traders,
+                        "total_trades": total_trades,
+                        "total_volume_usd": total_volume,
+                        "avg_premium_paid": avg_premium,
+                        "call_put_ratio": call_put_ratio,
+                        "most_popular_expiry": most_popular_expiry,
+                        "trades_per_hour": sum(activity.trades_per_hour for activity in activities),
+                        "avg_success_rate": sum(activity.success_rate for activity in activities) / len(activities),
+                        "calculation_method": "calculated_from_recent_trades"
+                    }
+                else:
+                    # Fallback statistics based on activities only
+                    stats = {
+                        "total_traders": total_traders,
+                        "total_trades": 247,  # Estimate based on trader count
+                        "total_volume_usd": total_traders * 2500,  # Estimate
+                        "avg_premium_paid": 2500.0,
+                        "call_put_ratio": 1.78,
+                        "most_popular_expiry": 480,
+                        "trades_per_hour": sum(activity.trades_per_hour for activity in activities),
+                        "avg_success_rate": sum(activity.success_rate for activity in activities) / len(activities),
+                        "calculation_method": "estimated_from_activities"
+                    }
+            else:
+                # Complete fallback statistics
+                stats = {
+                    "total_traders": 242,
+                    "total_trades": 247,
+                    "total_volume_usd": 605500,
+                    "avg_premium_paid": 2450.0,
+                    "call_put_ratio": 1.78,
+                    "most_popular_expiry": 480,
+                    "trades_per_hour": 14,
+                    "avg_success_rate": 0.65,
+                    "calculation_method": "fallback_defaults"
+                }
+        
+        duration = (time.time() - start_time) * 1000
+        log_api_call("trading-statistics", "success", duration)
+        
+        # Add metadata to response
+        stats["timestamp"] = time.time()
+        stats["response_time_ms"] = duration
+        
+        return stats
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        duration = (time.time() - start_time) * 1000
+        log_api_call("trading-statistics", f"error - {str(e)}", duration)
+        
+        # Emergency fallback to prevent 404
+        return {
+            "total_traders": 242,
+            "total_trades": 247,
+            "total_volume_usd": 605500,
+            "avg_premium_paid": 2450.0,
+            "call_put_ratio": 1.78,
+            "most_popular_expiry": 480,
+            "trades_per_hour": 14,
+            "avg_success_rate": 0.65,
+            "error": str(e)[:100],
+            "calculation_method": "emergency_fallback",
+            "timestamp": time.time()
+        }
+
 @router.get("/market-data")
 async def get_market_data():
     """Get market data including BTC price and volatility metrics - FIXES 404 ERROR."""
@@ -574,8 +572,7 @@ async def get_market_data():
             "status": "error"
         }
 
-# ← ALL YOUR EXISTING ENDPOINTS (keeping them exactly as they are)
-# [Rest of your existing endpoints remain unchanged...]
+# ALL YOUR EXISTING ENDPOINTS (keeping them exactly as they are)
 
 @router.get("/debug-system-status")
 async def debug_system_status():
@@ -1100,5 +1097,3 @@ async def simulate_user_growth(growth: UserGrowthSimulation):
         duration = (time.time() - start_time) * 1000
         log_api_call("simulate-user-growth", f"error - {str(e)}", duration)
         raise HTTPException(status_code=500, detail=f"Error simulating user growth: {str(e)}")
-
-# Additional debug endpoints (keeping your existing ones)...
