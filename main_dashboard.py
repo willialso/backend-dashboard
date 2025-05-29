@@ -19,7 +19,7 @@ from investor_dashboard.hedge_feed_manager import HedgeFeedManager
 
 app = FastAPI(title="Atticus Investor Dashboard", version="1.0.0")
 
-# ← ENHANCED CORS CONFIGURATION FOR LOVABLE INTEGRATION
+# ← FIXED CORS CONFIGURATION FOR NEW LOVABLE DASHBOARD
 origins = [
     # Local development
     "http://localhost:3000",
@@ -27,15 +27,16 @@ origins = [
     "http://127.0.0.1:3000",
     "http://127.0.0.1:8080",
     
-    # Lovable domains (CRITICAL for frontend integration)
+    # NEW Lovable dashboard domains (CRITICAL FIX)
+    "https://preview--atticus-trading-insights-dashboard.lovable.app",  # ← NEW URL FROM ERROR
+    "https://atticus-trading-insights-dashboard.lovable.app",           # ← PRODUCTION URL
+    
+    # Old Lovable domains (keep for compatibility)
     "https://preview--atticusq-live-view.lovable.app",
     "https://atticusq-live-view.lovable.app",
-    "https://preview--*.lovable.app",
-    "https://*.lovable.app",
     
     # Your Render deployment
     "https://atticus-demo-dashboard.onrender.com",
-    "https://*.onrender.com",
     
     # Development domains
     "http://localhost",
