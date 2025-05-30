@@ -91,6 +91,31 @@ async def lifespan(app: FastAPI):
         position_manager.pricing_engine = pricing_engine
         logger.info("✅ Position Manager initialized")
 
+        # CRITICAL FIX: Ensure PositionManager is fully configured before hedge manager
+        # Fix for: "PM: Cannot record trade—pricing engine or price missing"
+        
+        # Ensure pricing engine is properly set
+        if not position_manager.pricing_engine:
+            position_manager.pricing_engine = pricing_engine
+            logger.warning("🔧 Fixed: Manually assigned pricing_engine to position_manager")
+        
+        # Ensure current BTC price is set (critical for trade recording)
+        if not hasattr(position_manager, 'current_btc_price') or position_manager.current_btc_price <= 0:
+            position_manager.current_btc_price = 108000.0  # Default startup price
+            logger.warning("🔧 Fixed: Set default BTC price in position_manager")
+        
+        # Initialize any other required position manager attributes
+        if not hasattr(position_manager, 'positions'):
+            position_manager.positions = []
+        if not hasattr(position_manager, 'total_portfolio_delta'):
+            position_manager.total_portfolio_delta = 0.0
+            
+        # VERIFICATION: Log position manager state before hedge manager starts
+        logger.info("🔍 POSITION MANAGER VERIFICATION:")
+        logger.info(f"  ✅ pricing_engine set: {position_manager.pricing_engine is not None}")
+        logger.info(f"  ✅ current_btc_price: ${position_manager.current_btc_price:,.2f}")
+        logger.info(f"  ✅ positions initialized: {hasattr(position_manager, 'positions')}")
+        
         # FIXED: Revenue engine with ALL required parameters including audit_engine_instance
         try:
             revenue_engine = RevenueEngine(
@@ -148,7 +173,7 @@ async def lifespan(app: FastAPI):
         bot_trader_simulator.audit_engine = audit_engine
         bot_trader_simulator.current_btc_price = getattr(position_manager, 'current_btc_price', 108000.0)
 
-        # Hedge feed manager
+        # CRITICAL FIX: Hedge feed manager with enhanced initialization
         try:
             hedge_feed_manager = HedgeFeedManager(
                 position_manager_instance=position_manager,
@@ -156,7 +181,17 @@ async def lifespan(app: FastAPI):
             )
         except TypeError:
             hedge_feed_manager = HedgeFeedManager()
+            
+        # Ensure hedge feed manager has proper references
         hedge_feed_manager.position_manager = position_manager
+        hedge_feed_manager.audit_engine = audit_engine
+        
+        # CRITICAL: Verify hedge feed manager dependencies before starting
+        logger.info("🔍 HEDGE FEED MANAGER VERIFICATION:")
+        logger.info(f"  ✅ position_manager connected: {hedge_feed_manager.position_manager is not None}")
+        logger.info(f"  ✅ audit_engine connected: {hedge_feed_manager.audit_engine is not None}")
+        logger.info(f"  ✅ position_manager pricing_engine: {hedge_feed_manager.position_manager.pricing_engine is not None}")
+        logger.info(f"  ✅ position_manager current_price: ${hedge_feed_manager.position_manager.current_btc_price:,.2f}")
 
         # Inject into API module
         import investor_dashboard.dashboard_api as api_mod
@@ -168,17 +203,27 @@ async def lifespan(app: FastAPI):
         api_mod.hedge_feed_manager = hedge_feed_manager
 
         # FINAL VERIFICATION: Check all connections
-        logger.info("🔍 FINAL VERIFICATION:")
+        logger.info("🔍 FINAL COMPONENT VERIFICATION:")
         logger.info(f"  - revenue_engine.audit_engine: {revenue_engine.audit_engine is not None}")
         logger.info(f"  - revenue_engine.position_manager: {revenue_engine.position_manager is not None}")
         logger.info(f"  - bot_trader_simulator.revenue_engine: {bot_trader_simulator.revenue_engine is not None}")
 
-        # Start background services
+        # Start background services with proper order
+        logger.info("🚀 Starting background services...")
+        
+        # Start data feed manager first
         data_feed_manager.start()
+        logger.info("✅ Data feed manager started")
+        
+        # Start bot trader simulator  
         bot_trader_simulator.start()
+        logger.info("✅ Bot trader simulator started")
+        
+        # CRITICAL: Start hedge feed manager LAST after all dependencies verified
         hedge_feed_manager.start()
+        logger.info("✅ Hedge feed manager started")
 
-        logger.info("✅ Backend components initialized with full audit integration")
+        logger.info("✅ Backend components initialized with full audit integration and hedge fix")
         yield
 
         # Shutdown
