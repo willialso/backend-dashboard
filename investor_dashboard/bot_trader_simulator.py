@@ -3,16 +3,16 @@
 import random
 import time
 import threading
-import math  # ADDED: Missing import
-from dataclasses import dataclass, field
+import math
+from dataclasses import dataclass
 from typing import Dict, List, Optional, Any
 from enum import Enum
-import numpy as np
 import logging
 from collections import defaultdict
 
 from backend import config
 from .revenue_engine import RevenueEngine
+from investor_dashboard.position_manager import PositionManager
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +25,7 @@ class TraderType(Enum):
 class EnrichedTradeData:
     trade_id: str
     trader_type: TraderType
-    option_type: str  # "call" or "put"
+    option_type: str
     strike: float
     expiry_minutes: int
     premium_usd: float
@@ -40,314 +40,302 @@ class EnrichedTradeData:
     fair_value_usd: float = 0.0
     platform_markup_pct: float = 0.0
     trader_id: str = ""
-    
-    # Add any additional trade details needed for the dashboard
-    is_successful: bool = True  # Was trade execution successful
-    trader_experience_level: str = ""  # Additional demographic info
-    trader_success_rate: float = 0.0  # Historical success rate
-    platform_profit_usd: float = 0.0  # Platform's profit on this trade
+    is_successful: bool = True
+    trader_experience_level: str = ""
+    trader_success_rate: float = 0.0
+    platform_profit_usd: float = 0.0
 
 class BotTraderSimulator:
-    """Simulates bot trading activity to generate realistic options trade data."""
-    
-    def __init__(self,
-                 revenue_engine: Optional[Any] = None,  # FIXED: Parameter name matches constructor call
-                 position_manager: Optional[Any] = None,
-                 data_feed_manager: Optional[Any] = None,
-                 audit_engine_instance: Optional[Any] = None):
-        
+    """Simulates automated bot trading and records positions in PositionManager."""
+
+    def __init__(
+        self,
+        revenue_engine: Optional[RevenueEngine] = None,
+        position_manager: Optional[PositionManager] = None,
+        data_feed_manager: Optional[Any] = None,
+        audit_engine_instance: Optional[Any] = None
+    ):
         logger.info("Initializing Bot Trader Simulator...")
         self.revenue_engine = revenue_engine
         self.position_manager = position_manager
         self.audit_engine = audit_engine_instance
-        
         self.is_running = False
         self.current_btc_price = 0.0
         self.trade_id_counter = int(time.time() * 100)
-        self.recent_trades_log: List[EnrichedTradeData] = [] # Log of trades initiated by bots
-        
-        # Set up trader profiles
+        self.recent_trades_log: List[EnrichedTradeData] = []
+
+        # 50% Advanced, 35% Intermediate, 15% Beginner
+        total = config.BASE_TOTAL_SIMULATED_TRADERS
         self.trader_profiles = {
-            TraderType.ADVANCED: {"count": config.TRADER_COUNT_ADV, "avg_trade_premium": 2500,
-                                 "trades_per_hour": 8, "success_rate": 0.78,
-                                 "preferred_expiries": [e for e in config.AVAILABLE_EXPIRIES_MINUTES if e >=60],
-                                 "risk_tolerance_otm_pct": 0.03},
-            TraderType.INTERMEDIATE: {"count": config.TRADER_COUNT_INT, "avg_trade_premium": 1000,
-                                     "trades_per_hour": 4, "success_rate": 0.65,
-                                     "preferred_expiries": [e for e in config.AVAILABLE_EXPIRIES_MINUTES if e >=15 and e <= 240],
-                                     "risk_tolerance_otm_pct": 0.05},
-            TraderType.BEGINNER: {"count": config.TRADER_COUNT_BEG, "avg_trade_premium": 250,
-                                 "trades_per_hour": 2, "success_rate": 0.52,
-                                 "preferred_expiries": [e for e in config.AVAILABLE_EXPIRIES_MINUTES if e <= 60],
-                                 "risk_tolerance_otm_pct": 0.07}
-        }  # FIXED: Added missing closing brace
-        
-        # If data feed manager provided, register for price updates
+            TraderType.ADVANCED: {
+                "count": int(total * 0.50),
+                "trades_per_hour": config.TRADER_COUNT_ADV,
+                "success_rate": config.TRADER_SUCCESS_RATE,
+                "preferred_expiries": [e for e in config.AVAILABLE_EXPIRIES_MINUTES if e >= 60],
+                "risk_tolerance_otm_pct": config.BOT_OTM_MAX_FACTORS["Advanced"]
+            },
+            TraderType.INTERMEDIATE: {
+                "count": int(total * 0.35),
+                "trades_per_hour": config.TRADER_COUNT_INT,
+                "success_rate": config.TRADER_SUCCESS_RATE,
+                "preferred_expiries": [e for e in config.AVAILABLE_EXPIRIES_MINUTES if 15 <= e <= 240],
+                "risk_tolerance_otm_pct": config.BOT_OTM_MAX_FACTORS["Intermediate"]
+            },
+            TraderType.BEGINNER: {
+                "count": total - int(total*0.50) - int(total*0.35),
+                "trades_per_hour": config.TRADER_COUNT_BEG,
+                "success_rate": config.TRADER_SUCCESS_RATE,
+                "preferred_expiries": [e for e in config.AVAILABLE_EXPIRIES_MINUTES if e <= 60],
+                "risk_tolerance_otm_pct": config.BOT_OTM_MAX_FACTORS["Beginner"]
+            }
+        }
+
         if data_feed_manager and hasattr(data_feed_manager, 'add_price_callback'):
             data_feed_manager.add_price_callback(self.update_market_data)
-    
+
     def start(self):
-        """Start the bot trader simulator."""
         if self.is_running:
-            logger.info("BTS: Already running")
             return
-        
         self.is_running = True
-        # Force an initial price update to start with reasonable values
         if self.current_btc_price <= 0:
-            self.current_btc_price = 108000.0  # FIXED: Set a default price
-        
-        # Start the trading simulation in a background thread
+            self.current_btc_price = 108000.0
         threading.Thread(target=self._trading_loop, daemon=True).start()
-        logger.info(f"BTS: Started with {sum(p['count'] for p in self.trader_profiles.values())} virtual traders")
-    
+        total_bots = sum(p["count"] for p in self.trader_profiles.values())
+        logger.info(f"BTS: Started with {total_bots} virtual traders")
+
     def stop(self):
-        """Stop the bot trader simulator."""
         self.is_running = False
         logger.info("BTS: Stopped")
-    
-    def update_market_data(self, price_data: Any) -> None:
-        """Update the current market price data from feed."""
-        if hasattr(price_data, 'price') and price_data.price > 0:
-            self.current_btc_price = price_data.price
-    
+
+    def update_market_data(self, price_data: Any):
+        if isinstance(price_data, dict) and price_data.get("price", 0) > 0:
+            self.current_btc_price = price_data["price"]
+
     def _trading_loop(self):
-        """Main loop that generates simulated trading activity."""
-        logger.info("BTS: Trading loop started")
-        
+        logger.info("BTS: Trading loop running")
         try:
             while self.is_running:
-                # Skip if price isn't available yet
-                if self.current_btc_price <= 0:
-                    logger.debug("BTS: No price data yet, waiting...")
+                if self.current_btc_price <= 0 or not self.revenue_engine or not self.position_manager:
                     time.sleep(config.DATA_BROADCAST_INTERVAL_SECONDS)
                     continue
-                
-                # Skip if dependencies aren't available
-                if not self.revenue_engine or not self.position_manager:
-                    logger.warning("BTS: Missing revenue_engine or position_manager, waiting...")
-                    time.sleep(5)
-                    continue
-                
-                # Generate trades for each trader type
+
+                interval = getattr(config, "TRADE_SIMULATION_INTERVAL_SECONDS", 30)
                 for trader_type, profile in self.trader_profiles.items():
-                    # Calculate number of trades for this interval
-                    trades_this_interval = self._calculate_trades_for_interval(profile)
-                    
-                    # Generate each trade
-                    for _ in range(trades_this_interval):
+                    n_trades = self._calculate_trades_for_interval(profile)
+                    for _ in range(n_trades):
                         if not self.is_running:
                             break
-                        
                         self._generate_and_record_trade(trader_type, profile)
-                        # Small sleep between trades to avoid spikes
                         time.sleep(random.uniform(0.05, 0.2))
-                
-                # Wait for next interval
-                time.sleep(getattr(config, "TRADE_SIMULATION_INTERVAL_SECONDS", 30))
+                time.sleep(interval)
         except Exception as e:
             logger.error(f"BTS loop error: {e}", exc_info=True)
             self.is_running = False
-    
+
     def _calculate_trades_for_interval(self, profile: Dict) -> int:
-        """Calculate how many trades should be generated in this interval."""
-        num_bots_of_type = profile["count"]
-        trades_per_bot_ph = profile["trades_per_hour"]
-        
-        # Average trades per minute across all bots of this type
-        avg_type_trades_pm = (trades_per_bot_ph * num_bots_of_type) / 60.0
-        
-        # Scale to our interval duration
-        interval_minutes = getattr(config, "TRADE_SIMULATION_INTERVAL_SECONDS", 30) / 60.0
-        avg_trades_per_interval = avg_type_trades_pm * interval_minutes
-        
-        # Add some randomness with normal distribution 
-        # (mean = avg, std = sqrt(avg) for Poisson-like behavior)
-        return max(0, int(random.normalvariate(avg_trades_per_interval, math.sqrt(max(0.1, avg_trades_per_interval)))))
-    
-    def _generate_and_record_trade(self, trader_type: TraderType, profile: Dict):
-        """Generate a single simulated trade for the given trader type."""
-        if self.current_btc_price <= 0:
-            logger.warning("BTS: Cannot generate trade without valid price")
-            return
-        
+        bots = profile["count"]
+        tph = profile["trades_per_hour"]
+        avg_per_min = (tph * bots) / 60.0
+        minutes = getattr(config, "TRADE_SIMULATION_INTERVAL_SECONDS", 30) / 60.0
+        avg = avg_per_min * minutes
+        return max(0, int(random.normalvariate(avg, math.sqrt(max(0.1, avg)))))
+
+    def _generate_and_record_trade(self, trader_type: TraderType, profile: Dict) -> Optional[EnrichedTradeData]:
         try:
-            # Get a random expiry from preferred expiries
-            expiry_minutes = random.choice(profile["preferred_expiries"])
+            expiry = random.choice(profile["preferred_expiries"])
+            opt_type = random.choice(["call", "put"])
+            tol = profile["risk_tolerance_otm_pct"]
+            multiplier = (1 + random.uniform(0, tol*2)) if opt_type == "call" else (1 - random.uniform(0, tol*2))
+            strike = round(self.current_btc_price * multiplier / config.STRIKE_ROUNDING_NEAREST) * config.STRIKE_ROUNDING_NEAREST
+
+            # Try to price via revenue engine with debugging
+            info = {}
+            premium = 0.0
+            markup = 0.0
             
-            # Random call or put
-            option_type = random.choice(["call", "put"])
+            if self.revenue_engine:
+                try:
+                    self.revenue_engine.current_btc_price = self.current_btc_price
+                    
+                    # Try different method names that might exist
+                    if hasattr(self.revenue_engine, 'price_option_for_platform_sale'):
+                        info = self.revenue_engine.price_option_for_platform_sale(
+                            strike_price=strike,
+                            expiry_minutes=expiry,
+                            option_type=opt_type,
+                            quantity=1.0
+                        )
+                    elif hasattr(self.revenue_engine, 'get_option_pricing'):
+                        info = self.revenue_engine.get_option_pricing(
+                            strike=strike,
+                            expiry_minutes=expiry,
+                            option_type=opt_type
+                        )
+                    elif hasattr(self.revenue_engine, 'calculate_option_price'):
+                        info = self.revenue_engine.calculate_option_price(
+                            strike, expiry, opt_type
+                        )
+                    
+                    logger.info(f"BTS DEBUG: Revenue engine returned: {info}")
+                    logger.info(f"BTS DEBUG: Available keys: {list(info.keys()) if info else 'None'}")
+                    
+                    # Extract premium from various possible key names
+                    premium = (
+                        info.get("platform_price_per_contract", 0) or
+                        info.get("platform_price", 0) or
+                        info.get("price", 0) or
+                        info.get("premium", 0) or
+                        info.get("cost", 0)
+                    )
+                    markup = info.get("markup_pct", 0) or info.get("markup", 0)
+                    
+                except Exception as e:
+                    logger.error(f"BTS: Revenue engine error: {e}")
+                    info = {}
             
-            # Calculate strike based on risk tolerance (more OTM for higher risk)
-            risk_tolerance = profile["risk_tolerance_otm_pct"]
-            if option_type == "call":
-                # OTM calls have strike > current price
-                strike_multiplier = 1.0 + random.uniform(0, risk_tolerance * 2)
-            else:
-                # OTM puts have strike < current price
-                strike_multiplier = 1.0 - random.uniform(0, risk_tolerance * 2)
-            
-            # Assign initial strike near current price
-            strike_raw = self.current_btc_price * strike_multiplier
-            
-            # Round to nearest config.STRIKE_ROUNDING_NEAREST
-            strike = round(strike_raw / config.STRIKE_ROUNDING_NEAREST) * config.STRIKE_ROUNDING_NEAREST
-            strike = max(strike, config.STRIKE_ROUNDING_NEAREST)  # Ensure minimum positive strike
-            
-            # Ensure revenue engine has current BTC price
-            if hasattr(self.revenue_engine, 'current_btc_price'):
-                self.revenue_engine.current_btc_price = self.current_btc_price
-            
-            # Calculate trade premium using the revenue engine
-            pricing_and_trade_info = self.revenue_engine.price_option_for_platform_sale(
-                strike_price=strike,
-                expiry_minutes=expiry_minutes,
-                option_type=option_type,
-                quantity=1.0  # Each bot trade is for 1 contract
-            )
-            
-            # Create the trade log entry
+            # Fallback pricing if revenue engine fails
+            if premium == 0:
+                logger.warning("BTS: Using fallback pricing")
+                # Simple Black-Scholes approximation for demonstration
+                S = self.current_btc_price
+                K = strike
+                T = expiry / (365.25 * 24 * 60)  # Convert minutes to years
+                r = config.RISK_FREE_RATE
+                sigma = config.DEFAULT_VOLATILITY
+                
+                # Simplified option pricing
+                from math import sqrt, exp, log
+                try:
+                    import scipy.stats as stats
+                    d1 = (log(S/K) + (r + 0.5*sigma**2)*T) / (sigma*sqrt(T))
+                    d2 = d1 - sigma*sqrt(T)
+                    
+                    if opt_type == "call":
+                        premium = S*stats.norm.cdf(d1) - K*exp(-r*T)*stats.norm.cdf(d2)
+                    else:
+                        premium = K*exp(-r*T)*stats.norm.cdf(-d2) - S*stats.norm.cdf(-d1)
+                    
+                    premium = max(premium, 0.01)  # Minimum $0.01
+                    markup = config.REVENUE_BASE_MARKUP_PERCENTAGE * 100
+                    
+                    # Add markup
+                    premium_with_markup = premium * (1 + markup/100)
+                    premium = round(premium_with_markup, 2)
+                    
+                except ImportError:
+                    # Ultra-simple fallback
+                    moneyness = abs(S - K) / S
+                    time_value = sqrt(T) * 0.1 * S
+                    intrinsic = max(S - K if opt_type == "call" else K - S, 0)
+                    premium = round(intrinsic + time_value + moneyness * 100, 2)
+                    premium = max(premium, 1.0)  # Minimum $1
+                    markup = 3.5
+
             self.trade_id_counter += 1
-            trade_id = f"BT{self.trade_id_counter}"
+            tid = f"BT{self.trade_id_counter}"
             
-            trade_log_entry = EnrichedTradeData(
-                trade_id=trade_id,
+            trade = EnrichedTradeData(
+                trade_id=tid,
                 trader_type=trader_type,
-                option_type=option_type,
+                option_type=opt_type,
                 strike=strike,
-                expiry_minutes=expiry_minutes,
-                premium_usd=pricing_and_trade_info.get("platform_price", 0),
+                expiry_minutes=expiry,
+                premium_usd=premium,
                 quantity_contracts=1.0,
                 underlying_price=self.current_btc_price,
                 timestamp=time.time(),
-                delta=pricing_and_trade_info.get("delta", 0),
-                gamma=pricing_and_trade_info.get("gamma", 0),
-                theta=pricing_and_trade_info.get("theta", 0),
-                vega=pricing_and_trade_info.get("vega", 0),
-                iv_pct=pricing_and_trade_info.get("iv", 0) * 100,  # Convert to percentage
-                fair_value_usd=pricing_and_trade_info.get("fair_value", 0),
-                platform_markup_pct=pricing_and_trade_info.get("markup_pct", 0),
+                delta=info.get("delta", 0),
+                gamma=info.get("gamma", 0),
+                theta=info.get("theta", 0),
+                vega=info.get("vega", 0),
+                iv_pct=info.get("iv", 0)*100 if info.get("iv") else 0,
+                fair_value_usd=info.get("fair_value", premium * 0.9),
+                platform_markup_pct=markup,
                 trader_id=f"simbot{random.randint(1000,9999)}",
                 is_successful=random.random() < profile["success_rate"],
                 trader_experience_level=trader_type.value,
                 trader_success_rate=profile["success_rate"],
-                platform_profit_usd=pricing_and_trade_info.get("platform_profit", 0)
+                platform_profit_usd=info.get("platform_profit", premium * markup/100)
             )
-            
-            # Add to recent trades log
-            self.recent_trades_log.append(trade_log_entry)
+
+            # Append to log
+            self.recent_trades_log.append(trade)
             if len(self.recent_trades_log) > config.MAX_RECENT_TRADES_LOG_SIZE_BOTSIM:
-                self.recent_trades_log = self.recent_trades_log[-config.MAX_RECENT_TRADES_LOG_SIZE_BOTSIM:]
-            
-            # CRITICAL FIX: Ensure PositionManager has current BTC price before adding trade
-            if hasattr(self.position_manager, 'current_btc_price'):
+                self.recent_trades_log.pop(0)
+
+            # Record in PositionManager
+            if self.position_manager:
+                now = time.time()
                 self.position_manager.current_btc_price = self.current_btc_price
-            
-            # Add to position manager
-            current_timestamp = time.time()
-            expiry_timestamp = current_timestamp + (expiry_minutes * 60)  # Convert minutes to seconds
-            self.position_manager.add_option_trade({
-                "trade_id": trade_id,
-                "option_type": option_type,
-                "strike": strike,
-                "expiry_minutes": expiry_minutes,
-                "premium": pricing_and_trade_info.get("platform_price", 0),
-                "quantity": 1.0,
-                "underlying_price_at_trade": self.current_btc_price,
-                "delta": pricing_and_trade_info.get("delta", 0),
-                "gamma": pricing_and_trade_info.get("gamma", 0),
-                "theta": pricing_and_trade_info.get("theta", 0),
-                "vega": pricing_and_trade_info.get("vega", 0),
-                "volatility_at_trade": pricing_and_trade_info.get("iv", 0.8),
-                "is_short": True,
-                "initial_premium_total": pricing_and_trade_info.get("initial_premium_total", pricing_and_trade_info.get("platform_price", 0)),
-                "timestamp": current_timestamp,
-                "expiry_timestamp": expiry_timestamp
-            })
-            
-            logger.info(f"BTS: Generated {trader_type.value} {option_type.upper()} K{strike} {expiry_minutes}min trade, premium=${trade_log_entry.premium_usd:.2f}")
-            return trade_log_entry
-            
+                self.position_manager.add_option_trade({
+                    "trade_id": tid,
+                    "option_type": opt_type,
+                    "strike": strike,
+                    "expiry_timestamp": now + expiry*60,
+                    "quantity": 1.0,
+                    "is_short": True,
+                    "initial_premium_total": premium,
+                    "underlying_price_at_trade": self.current_btc_price,
+                    "volatility_at_trade": info.get("iv", config.DEFAULT_VOLATILITY),
+                    "timestamp": now
+                })
+
+            logger.info(f"BTS: Trade {tid} {opt_type.upper()} K{strike} premium=${premium:.2f}")
+            return trade
+
         except Exception as e:
             logger.error(f"BTS trade generation error: {e}", exc_info=True)
             return None
-    
-    def get_current_activity(self) -> List[Any]:
-        """Get current activity stats for each trader type."""
-        activity = []
-        for trader_type, profile_data in self.trader_profiles.items():
-            activity.append({
-                "trader_type": trader_type,
-                "count": profile_data["count"],
-                "trades_per_hour_per_bot": profile_data["trades_per_hour"],
-                "success_rate": profile_data["success_rate"],
+
+    def get_current_activity(self) -> List[Dict[str, Any]]:
+        return [
+            {
+                "trader_type": t.value,
+                "count": p["count"],
+                "trades_per_hour": p["trades_per_hour"],
+                "success_rate": p["success_rate"],
                 "timestamp": time.time()
-            })
-        return activity
-    
+            }
+            for t, p in self.trader_profiles.items()
+        ]
+
     def get_recent_trades(self, limit: int = 10) -> List[EnrichedTradeData]:
-        """Get most recent simulated trades."""
-        # This log is now mostly for BTS's own record of what it *initiated*.
         return sorted(self.recent_trades_log, key=lambda x: x.timestamp, reverse=True)[:limit]
-    
-    def adjust_trader_distribution(self, advanced_pct: float, intermediate_pct: float, beginner_pct: float):
-        # Your existing logic using config for base total traders is fine.
-        if abs((advanced_pct + intermediate_pct + beginner_pct) - 100.0) > 0.1:
-            logger.error("BTS: Trader distribution percentages must sum to 100.")
-            raise ValueError("Percentages must sum to 100")
-        
-        total_traders = config.BASE_TOTAL_SIMULATED_TRADERS
-        
-        # Update counts in trader profiles
-        self.trader_profiles[TraderType.ADVANCED]["count"] = int((advanced_pct / 100.0) * total_traders)
-        self.trader_profiles[TraderType.INTERMEDIATE]["count"] = int((intermediate_pct / 100.0) * total_traders)
-        self.trader_profiles[TraderType.BEGINNER]["count"] = total_traders - self.trader_profiles[TraderType.ADVANCED]["count"] - self.trader_profiles[TraderType.INTERMEDIATE]["count"]
-        
-        logger.info(f"BTS: Adjusted trader distribution to {self.trader_profiles[TraderType.ADVANCED]['count']} adv, {self.trader_profiles[TraderType.INTERMEDIATE]['count']} int, {self.trader_profiles[TraderType.BEGINNER]['count']} beg")
-        
-        return {
-            "advanced_count": self.trader_profiles[TraderType.ADVANCED]["count"],
-            "intermediate_count": self.trader_profiles[TraderType.INTERMEDIATE]["count"],
-            "beginner_count": self.trader_profiles[TraderType.BEGINNER]["count"],
-            "total_count": total_traders
-        }
-    
-    def get_trading_statistics(self):
-        """Get statistics about trading activity in the last 24 hours."""
-        cutoff_24h = time.time() - (24 * 60 * 60)
-        
-        # Filter trades from last 24h
-        trades_for_stats = [t for t in self.recent_trades_log if t.timestamp >= cutoff_24h]
-        
-        if not trades_for_stats:
+
+    def adjust_trader_distribution(self, total_traders: int) -> Dict[str, int]:
+        adv = int(total_traders * 0.50)
+        inter = int(total_traders * 0.35)
+        beg = total_traders - adv - inter
+        self.trader_profiles[TraderType.ADVANCED]["count"] = adv
+        self.trader_profiles[TraderType.INTERMEDIATE]["count"] = inter
+        self.trader_profiles[TraderType.BEGINNER]["count"] = beg
+        logger.info(f"BTS: Distribution updated Adv={adv}, Int={inter}, Beg={beg}")
+        return {"advanced_count": adv, "intermediate_count": inter, "beginner_count": beg, "total_count": total_traders}
+
+    def get_trading_statistics(self) -> Dict[str, Any]:
+        cutoff = time.time() - 86400
+        trades = [t for t in self.recent_trades_log if t.timestamp >= cutoff]
+        if not trades:
             return {
                 "total_trades_24h": 0,
                 "total_premium_volume_usd_24h": 0,
                 "avg_premium_received_usd_24h": 0,
                 "call_put_ratio_24h": 0,
-                "most_active_expiry_minutes_24h": 0,
-                "data_source": "bts_log_no_trades_24h"
+                "most_active_expiry_minutes_24h": 0
             }
-        
-        # Calculate call/put ratio
-        calls = len([t for t in trades_for_stats if t.option_type == "call"])
-        puts = len([t for t in trades_for_stats if t.option_type == "put"])
-        call_put_ratio = calls / puts if puts > 0 else float('inf')
-        
-        # Find most active expiry
+        calls = sum(1 for t in trades if t.option_type == "call")
+        puts = sum(1 for t in trades if t.option_type == "put")
+        ratio = round(calls / puts, 2) if puts else calls
+        total_prem = round(sum(t.premium_usd for t in trades), 2)
+        avg_prem = round(total_prem / len(trades), 2)
         expiry_counts = defaultdict(int)
-        for t in trades_for_stats: expiry_counts[t.expiry_minutes] += 1
-        most_active_expiry = max(expiry_counts.items(), key=lambda x: x[1])[0] if expiry_counts else 0
-        
-        # Calculate volume and average premium
-        total_premium = sum(t.premium_usd for t in trades_for_stats)
-        avg_premium = total_premium / len(trades_for_stats) if trades_for_stats else 0
-        
+        for t in trades:
+            expiry_counts[t.expiry_minutes] += 1
+        most_active = max(expiry_counts, key=expiry_counts.get)
         return {
-            "total_trades_24h": len(trades_for_stats),
-            "total_premium_volume_usd_24h": round(total_premium, 2),
-            "avg_premium_received_usd_24h": round(avg_premium, 2),
-            "call_put_ratio_24h": round(call_put_ratio, 2),
-            "most_active_expiry_minutes_24h": most_active_expiry,
-            "data_source": "bts_log_24h"
+            "total_trades_24h": len(trades),
+            "total_premium_volume_usd_24h": total_prem,
+            "avg_premium_received_usd_24h": avg_prem,
+            "call_put_ratio_24h": ratio,
+            "most_active_expiry_minutes_24h": most_active
         }

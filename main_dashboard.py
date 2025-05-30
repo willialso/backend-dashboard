@@ -1,16 +1,14 @@
 # main_dashboard.py
 
-import asyncio
-import logging
 import time
+import logging
+import asyncio
 from contextlib import asynccontextmanager
-from typing import Optional, Any
+from typing import Optional
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
 
-# Import all backend components
 from backend import config
 from backend.advanced_volatility_engine import AdvancedVolatilityEngine
 from backend.advanced_pricing_engine import AdvancedPricingEngine
@@ -21,15 +19,10 @@ from investor_dashboard.liquidity_manager import LiquidityManager
 from investor_dashboard.bot_trader_simulator import BotTraderSimulator
 from investor_dashboard.audit_engine import AuditEngine
 from investor_dashboard.hedge_feed_manager import HedgeFeedManager
+from investor_dashboard.dashboard_api import router as dashboard_router
 
-# Import API router
-from investor_dashboard.dashboard_api import router as dashboard_router, log_api_call, safe_component_call, position_manager as _pm
-
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-)
+# Configure root logger
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
 # Global component instances
@@ -45,14 +38,15 @@ hedge_feed_manager: Optional[HedgeFeedManager] = None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Application lifespan manager for startup/shutdown."""
-    logger.info("🔧 Initializing global backend components...")
+    """Startup and shutdown for backend components."""
     global data_feed_manager, volatility_engine, pricing_engine
     global revenue_engine, position_manager, liquidity_manager
     global bot_trader_simulator, audit_engine, hedge_feed_manager
 
     try:
-        # Initialize DataFeedManager
+        logger.info("🔧 Initializing backend components...")
+
+        # Data feed manager
         data_feed_manager = DataFeedManager(
             enabled_exchanges=config.EXCHANGES_ENABLED,
             primary_exchange=config.PRIMARY_EXCHANGE,
@@ -66,8 +60,10 @@ async def lifespan(app: FastAPI):
             price_history_max_points=config.PRICE_HISTORY_MAX_POINTS
         )
 
-        # Initialize engines and managers...
+        # Audit engine
         audit_engine = AuditEngine()
+
+        # Volatility & pricing engines
         volatility_engine = AdvancedVolatilityEngine(
             price_history_max_points=config.PRICE_HISTORY_MAX_POINTS,
             default_vol=config.DEFAULT_VOLATILITY,
@@ -85,21 +81,21 @@ async def lifespan(app: FastAPI):
             volatility_engine_instance=volatility_engine,
             alpha_signal_generator_instance=None
         )
+
+        # Revenue engine
         revenue_engine = RevenueEngine(
             volatility_engine_instance=volatility_engine,
             pricing_engine_instance=pricing_engine
         )
 
-        # PositionManager with fallback injection
+        # Position manager
         try:
             position_manager = PositionManager(pricing_engine_instance=pricing_engine)
         except TypeError:
-            position_manager = PositionManager()
-        if position_manager and not hasattr(position_manager, 'pricing_engine'):
-            position_manager.pricing_engine = pricing_engine
-            logger.info("🔧 Manually set pricing_engine on PositionManager")
+            position_manager = PositionManager(pricing_engine_instance=pricing_engine)
+        position_manager.pricing_engine = pricing_engine
 
-        # LiquidityManager
+        # Liquidity manager
         try:
             liquidity_manager = LiquidityManager(
                 initial_total_pool_usd=config.LM_INITIAL_TOTAL_POOL_USD,
@@ -114,7 +110,7 @@ async def lifespan(app: FastAPI):
         except TypeError:
             liquidity_manager = LiquidityManager()
 
-        # BotTraderSimulator
+        # Bot trader simulator
         try:
             bot_trader_simulator = BotTraderSimulator(
                 revenue_engine=revenue_engine,
@@ -124,13 +120,12 @@ async def lifespan(app: FastAPI):
             )
         except TypeError:
             bot_trader_simulator = BotTraderSimulator()
-            bot_trader_simulator.revenue_engine = revenue_engine
-            bot_trader_simulator.position_manager = position_manager
-            bot_trader_simulator.audit_engine = audit_engine
-            logger.info("🔧 Manually injected dependencies into BotTraderSimulator")
+        bot_trader_simulator.revenue_engine = revenue_engine
+        bot_trader_simulator.position_manager = position_manager
+        bot_trader_simulator.audit_engine = audit_engine
         bot_trader_simulator.current_btc_price = getattr(position_manager, 'current_btc_price', 108000.0)
 
-        # HedgeFeedManager
+        # Hedge feed manager
         try:
             hedge_feed_manager = HedgeFeedManager(
                 position_manager_instance=position_manager,
@@ -138,9 +133,9 @@ async def lifespan(app: FastAPI):
             )
         except TypeError:
             hedge_feed_manager = HedgeFeedManager()
-            hedge_feed_manager.position_manager = position_manager
+        hedge_feed_manager.position_manager = position_manager
 
-        # Inject into dashboard_api
+        # Inject into API module
         import investor_dashboard.dashboard_api as api_mod
         api_mod.revenue_engine = revenue_engine
         api_mod.position_manager = position_manager
@@ -153,58 +148,49 @@ async def lifespan(app: FastAPI):
         data_feed_manager.start()
         bot_trader_simulator.start()
         hedge_feed_manager.start()
-        logger.info("✅ All backend components initialized successfully!")
+
+        logger.info("✅ Backend components initialized")
         yield
 
         # Shutdown
-        logger.info("🔄 Shutting down backend components...")
+        logger.info("🔄 Shutting down backend components")
         data_feed_manager.stop()
         bot_trader_simulator.stop()
         hedge_feed_manager.stop()
-        logger.info("✅ All components shut down successfully!")
+        logger.info("✅ Shutdown complete")
+
     except Exception as e:
-        logger.error(f"❌ Failed to initialize components: {e}", exc_info=True)
+        logger.error("❌ Initialization failed", exc_info=True)
         raise
 
 # Create FastAPI app
 app = FastAPI(
     title="Atticus Options Trading Platform",
-    description="Professional-grade BTC options trading platform with real-time market data",
     version="2.3.1",
     lifespan=lifespan
 )
 
-# === CORS MIDDLEWARE FIX ===
-origins = [
-    "http://localhost:3000",
-    "http://127.0.0.1:3000",
-    "https://preview--atticus-insight-hub.lovable.app",
-    "https://atticus-demo-dashboard.onrender.com",
-    "*"  # development; restrict in production
-]
-
+# CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,
+    allow_origins=config.CORS_ORIGINS,
     allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH", "HEAD"],
+    allow_methods=["*"],
     allow_headers=["*"],
     expose_headers=["Content-Disposition"],
     max_age=86400,
 )
 
-# Include the dashboard router
+# Mount dashboard router
 app.include_router(dashboard_router, prefix="/api/dashboard")
 
 @app.get("/health")
 async def health_check():
-    """Comprehensive health check."""
+    """Overall system health."""
     try:
-        pm_ok = position_manager is not None
-        df_ok = data_feed_manager is not None and data_feed_manager.get_current_price() > 0
         statuses = {
-            "data_feed": df_ok,
-            "position_manager": pm_ok,
+            "data_feed": data_feed_manager is not None and data_feed_manager.get_current_price() > 0,
+            "position_manager": position_manager is not None,
             "revenue_engine": revenue_engine is not None,
             "pricing_engine": pricing_engine is not None,
             "liquidity_manager": liquidity_manager is not None,
@@ -212,18 +198,18 @@ async def health_check():
             "hedge_manager": hedge_feed_manager is not None,
             "audit_engine": audit_engine is not None
         }
-        up = sum(v for v in statuses.values())
+        up = sum(statuses.values())
         total = len(statuses)
-        health_pct = (up/total)*100
-        status = "healthy" if health_pct >= 90 else ("degraded" if health_pct >= 70 else "unhealthy")
+        pct = (up/total)*100
+        status = "healthy" if pct >= 90 else ("degraded" if pct >= 70 else "unhealthy")
         return {
             "status": status,
-            "health_percentage": round(health_pct,1),
+            "health_percentage": round(pct,1),
             "services": statuses,
             "timestamp": time.time()
         }
     except Exception as e:
-        logger.error(f"Health check failed: {e}", exc_info=True)
+        logger.error("Health check failed", exc_info=True)
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 @app.get("/")
@@ -238,5 +224,4 @@ async def root():
 
 if __name__ == "__main__":
     import uvicorn
-    logger.info("🚀 Starting Atticus server...")
     uvicorn.run("main_dashboard:app", host=config.API_HOST, port=config.API_PORT, reload=True)
