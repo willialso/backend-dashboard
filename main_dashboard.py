@@ -60,8 +60,9 @@ async def lifespan(app: FastAPI):
             price_history_max_points=config.PRICE_HISTORY_MAX_POINTS
         )
 
-        # Audit engine
+        # FIXED: Audit engine FIRST
         audit_engine = AuditEngine()
+        logger.info("✅ Audit Engine initialized")
 
         # Volatility & pricing engines
         volatility_engine = AdvancedVolatilityEngine(
@@ -82,18 +83,40 @@ async def lifespan(app: FastAPI):
             alpha_signal_generator_instance=None
         )
 
-        # Revenue engine
-        revenue_engine = RevenueEngine(
-            volatility_engine_instance=volatility_engine,
-            pricing_engine_instance=pricing_engine
-        )
-
-        # Position manager
+        # Position manager BEFORE revenue engine
         try:
             position_manager = PositionManager(pricing_engine_instance=pricing_engine)
         except TypeError:
             position_manager = PositionManager(pricing_engine_instance=pricing_engine)
         position_manager.pricing_engine = pricing_engine
+        logger.info("✅ Position Manager initialized")
+
+        # FIXED: Revenue engine with ALL required parameters including audit_engine_instance
+        try:
+            revenue_engine = RevenueEngine(
+                volatility_engine_instance=volatility_engine,
+                pricing_engine_instance=pricing_engine,
+                position_manager_instance=position_manager,
+                audit_engine_instance=audit_engine  # CRITICAL FIX: This was missing!
+            )
+        except TypeError as e:
+            logger.warning(f"RevenueEngine constructor TypeError: {e}, trying fallback")
+            # Fallback if constructor doesn't accept all parameters
+            revenue_engine = RevenueEngine(
+                volatility_engine_instance=volatility_engine,
+                pricing_engine_instance=pricing_engine
+            )
+            # Manually set missing references
+            revenue_engine.position_manager = position_manager
+            revenue_engine.audit_engine = audit_engine
+
+        # CRITICAL: Verify audit engine connection
+        if revenue_engine.audit_engine is None:
+            logger.error("CRITICAL: RevenueEngine audit_engine is None!")
+            revenue_engine.audit_engine = audit_engine
+            logger.warning("Fixed: Manually assigned audit_engine to revenue_engine")
+        else:
+            logger.info(f"✅ RevenueEngine connected to audit_engine: {type(revenue_engine.audit_engine)}")
 
         # Liquidity manager
         try:
@@ -144,12 +167,18 @@ async def lifespan(app: FastAPI):
         api_mod.audit_engine = audit_engine
         api_mod.hedge_feed_manager = hedge_feed_manager
 
+        # FINAL VERIFICATION: Check all connections
+        logger.info("🔍 FINAL VERIFICATION:")
+        logger.info(f"  - revenue_engine.audit_engine: {revenue_engine.audit_engine is not None}")
+        logger.info(f"  - revenue_engine.position_manager: {revenue_engine.position_manager is not None}")
+        logger.info(f"  - bot_trader_simulator.revenue_engine: {bot_trader_simulator.revenue_engine is not None}")
+
         # Start background services
         data_feed_manager.start()
         bot_trader_simulator.start()
         hedge_feed_manager.start()
 
-        logger.info("✅ Backend components initialized")
+        logger.info("✅ Backend components initialized with full audit integration")
         yield
 
         # Shutdown
@@ -170,11 +199,11 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# CORS middleware - FIXED: Explicit origins including Lovable preview
+# CORS middleware - Explicit origins including Lovable preview
 origins = [
     "http://localhost:3000",
     "http://127.0.0.1:3000",
-    "https://preview--atticus-insight-hub.lovable.app",  # Added explicit Lovable preview
+    "https://preview--atticus-insight-hub.lovable.app",
     "https://atticus-insight-hub.lovable.app",
     "https://atticus-demo-dashboard.onrender.com"
 ]

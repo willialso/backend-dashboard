@@ -120,25 +120,63 @@ class BotTraderSimulator:
                     continue
 
                 interval = getattr(config, "TRADE_SIMULATION_INTERVAL_SECONDS", 30)
+                
+                # FIXED: Read current trader profiles each loop iteration
+                current_total = sum(p["count"] for p in self.trader_profiles.values())
+                
                 for trader_type, profile in self.trader_profiles.items():
+                    # FIXED: Use current profile count, not cached value
+                    current_count = profile["count"]
+                    if current_count <= 0:
+                        continue
+                        
                     n_trades = self._calculate_trades_for_interval(profile)
+                    
+                    # Log trade generation for debugging
+                    if n_trades > 0:
+                        logger.info(f"BTS: Generating {n_trades} trades for {trader_type.value} ({current_count} traders)")
+                    
                     for _ in range(n_trades):
                         if not self.is_running:
                             break
                         self._generate_and_record_trade(trader_type, profile)
                         time.sleep(random.uniform(0.05, 0.2))
+                        
+                # Log total traders for debugging
+                if current_total != config.BASE_TOTAL_SIMULATED_TRADERS:
+                    logger.info(f"BTS: Operating with {current_total} total traders (scaled from {config.BASE_TOTAL_SIMULATED_TRADERS})")
+                    
                 time.sleep(interval)
         except Exception as e:
             logger.error(f"BTS loop error: {e}", exc_info=True)
             self.is_running = False
 
     def _calculate_trades_for_interval(self, profile: Dict) -> int:
-        bots = profile["count"]
-        tph = profile["trades_per_hour"]
-        avg_per_min = (tph * bots) / 60.0
-        minutes = getattr(config, "TRADE_SIMULATION_INTERVAL_SECONDS", 30) / 60.0
-        avg = avg_per_min * minutes
-        return max(0, int(random.normalvariate(avg, math.sqrt(max(0.1, avg)))))
+        """FIXED: Properly calculate trades based on current trader count"""
+        current_bots = profile["count"]  # Use current count, not cached
+        base_trades_per_hour = profile.get("trades_per_hour", 1)
+        
+        # Calculate trades per minute for this trader type
+        trades_per_minute = (base_trades_per_hour * current_bots) / 60.0
+        
+        # Calculate expected trades for this interval
+        interval_minutes = getattr(config, "TRADE_SIMULATION_INTERVAL_SECONDS", 30) / 60.0
+        expected_trades = trades_per_minute * interval_minutes
+        
+        # Add some randomness but ensure we hit the expected average
+        if expected_trades < 1.0:
+            # For low rates, use probability-based generation
+            return 1 if random.random() < expected_trades else 0
+        else:
+            # For higher rates, use normal distribution around expected value
+            variance = max(0.1, expected_trades * 0.1)  # 10% variance
+            actual_trades = max(0, int(random.normalvariate(expected_trades, math.sqrt(variance))))
+            
+        # Debug logging for scaling verification
+        if current_bots != config.BASE_TOTAL_SIMULATED_TRADERS // 3:  # Detect when scaled
+            logger.debug(f"BTS: {current_bots} bots → {actual_trades} trades this interval")
+            
+        return actual_trades
 
     def _generate_and_record_trade(self, trader_type: TraderType, profile: Dict) -> Optional[EnrichedTradeData]:
         try:
@@ -176,9 +214,6 @@ class BotTraderSimulator:
                             strike, expiry, opt_type
                         )
                     
-                    logger.info(f"BTS DEBUG: Revenue engine returned: {info}")
-                    logger.info(f"BTS DEBUG: Available keys: {list(info.keys()) if info else 'None'}")
-                    
                     # Extract premium from various possible key names
                     premium = (
                         info.get("platform_price_per_contract", 0) or
@@ -195,7 +230,6 @@ class BotTraderSimulator:
             
             # Fallback pricing if revenue engine fails
             if premium == 0:
-                logger.warning("BTS: Using fallback pricing")
                 # Simple Black-Scholes approximation for demonstration
                 S = self.current_btc_price
                 K = strike
@@ -280,7 +314,6 @@ class BotTraderSimulator:
                     "timestamp": now
                 })
 
-            logger.info(f"BTS: Trade {tid} {opt_type.upper()} K{strike} premium=${premium:.2f}")
             return trade
 
         except Exception as e:
@@ -303,18 +336,27 @@ class BotTraderSimulator:
         return sorted(self.recent_trades_log, key=lambda x: x.timestamp, reverse=True)[:limit]
 
     def adjust_trader_distribution(self, total_traders: int) -> Dict[str, int]:
+        """FIXED: Immediately update trader counts and log the change"""
         adv = int(total_traders * 0.50)
         inter = int(total_traders * 0.35)
         beg = total_traders - adv - inter
+        
+        # Update the actual trader profiles used by the trading loop
         self.trader_profiles[TraderType.ADVANCED]["count"] = adv
         self.trader_profiles[TraderType.INTERMEDIATE]["count"] = inter
         self.trader_profiles[TraderType.BEGINNER]["count"] = beg
-        logger.info(f"BTS: Distribution updated Adv={adv}, Int={inter}, Beg={beg}")
+        
+        # Log the change for immediate verification
+        logger.info(f"BTS: Distribution updated - Adv={adv}, Int={inter}, Beg={beg}, Total={total_traders}")
+        logger.info(f"BTS: Expected trades/hour: {(adv*25 + inter*17 + beg*8):,}")
+        
         return {"advanced_count": adv, "intermediate_count": inter, "beginner_count": beg, "total_count": total_traders}
 
     def get_trading_statistics(self) -> Dict[str, Any]:
+        """FIXED: Calculate statistics from actual recent trades"""
         cutoff = time.time() - 86400
         trades = [t for t in self.recent_trades_log if t.timestamp >= cutoff]
+        
         if not trades:
             return {
                 "total_trades_24h": 0,
@@ -323,15 +365,22 @@ class BotTraderSimulator:
                 "call_put_ratio_24h": 0,
                 "most_active_expiry_minutes_24h": 0
             }
+            
         calls = sum(1 for t in trades if t.option_type == "call")
         puts = sum(1 for t in trades if t.option_type == "put")
         ratio = round(calls / puts, 2) if puts else calls
         total_prem = round(sum(t.premium_usd for t in trades), 2)
         avg_prem = round(total_prem / len(trades), 2)
+        
         expiry_counts = defaultdict(int)
         for t in trades:
             expiry_counts[t.expiry_minutes] += 1
-        most_active = max(expiry_counts, key=expiry_counts.get)
+        most_active = max(expiry_counts, key=expiry_counts.get) if expiry_counts else 0
+        
+        # Log current statistics for debugging
+        current_total = sum(p["count"] for p in self.trader_profiles.values())
+        logger.debug(f"BTS Stats: {len(trades)} trades from {current_total} traders, ${total_prem:,.2f} volume")
+        
         return {
             "total_trades_24h": len(trades),
             "total_premium_volume_usd_24h": total_prem,
