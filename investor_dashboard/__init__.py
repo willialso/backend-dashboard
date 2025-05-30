@@ -1,33 +1,39 @@
 # investor_dashboard/__init__.py
 
 """
-Investor Dashboard Package for Atticus Platform
+Investor Dashboard Module
 
-This package contains all investor-facing dashboard components including
-revenue tracking, liquidity management, position management, and trading simulation.
+Provides comprehensive trading, risk management, and liquidity tracking
+for the Atticus Options Trading Platform.
 """
 
-__version__ = "1.0.0"
-__author__ = "Atticus Team"
+from .revenue_engine import RevenueEngine
+from .position_manager import PositionManager, EnrichedTradeDataInPM, EnrichedHedgePositionInPM
+from .bot_trader_simulator import BotTraderSimulator, TraderType
+from .hedge_feed_manager import HedgeFeedManager, Exchange, HedgeExecution
+from .audit_engine import AuditEngine, AuditMetrics, ComplianceCheck
+from .liquidity_manager import LiquidityManager, LiquidityAllocation  # FIXED: Removed LiquidityStatus
 
-# Import the main classes from this package
-from .audit_engine import AuditEngine
-from .revenue_engine import RevenueEngine, RevenueMetrics
-from .position_manager import PositionManager
-from .liquidity_manager import LiquidityManager, LiquidityStatus
-from .hedge_feed_manager import HedgeFeedManager
-from .bot_trader_simulator import BotTraderSimulator, EnrichedTradeData, TraderType  # FIXED: Changed TraderActivity to TraderType
-
-# Define the public API
 __all__ = [
-    "AuditEngine",
-    "RevenueEngine", 
-    "RevenueMetrics",
-    "PositionManager",
+    # Core engines
+    "RevenueEngine",
+    "PositionManager", 
     "LiquidityManager",
-    "LiquidityStatus", 
-    "HedgeFeedManager",
     "BotTraderSimulator",
-    "EnrichedTradeData",
-    "TraderType"  # FIXED: Changed from TraderActivity to TraderType
+    "HedgeFeedManager",
+    "AuditEngine",
+    
+    # Data classes
+    "EnrichedTradeDataInPM",
+    "EnrichedHedgePositionInPM", 
+    "LiquidityAllocation",  # FIXED: Updated to correct class name
+    "AuditMetrics",
+    "ComplianceCheck",
+    "HedgeExecution",
+    
+    # Enums
+    "TraderType",
+    "Exchange"
 ]
+
+__version__ = "2.3.1"

@@ -18,6 +18,7 @@ from .audit_engine import AuditEngine
 from .revenue_engine import RevenueEngine
 
 router = APIRouter()
+
 logger = logging.getLogger(__name__)
 
 # These will be injected at startup in main_dashboard.py
@@ -56,8 +57,13 @@ class LiquidityAllocation(BaseModel):
     liquidity_pct: float
     operations_pct: float
 
+class LiquidityPoolSize(BaseModel):
+    total_pool_usd: float
+    reason: Optional[str] = "manual_adjustment"
+
 class TraderDistribution(BaseModel):
     total_traders: int
+    auto_scale_liquidity: Optional[bool] = False
 
 @router.get("/platform-health")
 async def get_platform_health():
@@ -70,9 +76,11 @@ async def get_platform_health():
         "bot_simulator": bot_trader_simulator is not None,
         "position_manager": position_manager is not None
     }
+    
     up = sum(comps.values())
     pct = up / len(comps) * 100
     status = "GOOD" if pct >= 80 else ("FAIR" if pct >= 50 else "POOR")
+    
     log_api_call("/platform-health", "success", (time.time()-start)*1000)
     return {"overall_health": status, "health_score": pct, "components": comps, "timestamp": time.time()}
 
@@ -81,12 +89,15 @@ async def get_revenue_metrics():
     start = time.time()
     if not revenue_engine:
         raise HTTPException(503, "Revenue engine unavailable")
+    
     metrics, err = safe_component_call("revenue_engine", revenue_engine.get_current_metrics)
     if err or not metrics:
         log_api_call("/revenue-metrics", f"error - {err}", (time.time()-start)*1000)
         raise HTTPException(500, f"Error fetching revenue metrics: {err}")
+    
     data = metrics.__dict__ if hasattr(metrics, "__dict__") else metrics
     data["timestamp"] = time.time()
+    
     log_api_call("/revenue-metrics", "success", (time.time()-start)*1000)
     return data
 
@@ -119,6 +130,7 @@ async def get_bot_trader_status():
         "activity": activity,
         "timestamp": time.time()
     }
+    
     log_api_call("/bot-trader-status", "success", (time.time()-start)*1000)
     return data
 
@@ -129,8 +141,10 @@ async def get_trading_statistics():
     if err or stats is None:
         log_api_call("/trading-statistics", f"error - {err}", (time.time()-start)*1000)
         raise HTTPException(500, f"Error fetching trading statistics: {err}")
+    
     data = stats if isinstance(stats, dict) else stats.__dict__
     data["timestamp"] = time.time()
+    
     log_api_call("/trading-statistics", "success", (time.time()-start)*1000)
     return data
 
@@ -141,27 +155,228 @@ async def get_recent_trades(limit: int = 10):
     if err or trades is None:
         log_api_call("/recent-trades", f"error - {err}", (time.time()-start)*1000)
         raise HTTPException(500, f"Error fetching recent trades: {err}")
+    
     out = [t.__dict__ for t in trades]
+    
     log_api_call("/recent-trades", "success", (time.time()-start)*1000)
     return {"trades": out, "total_returned": len(out), "timestamp": time.time()}
 
 @router.get("/liquidity-allocation")
 async def get_liquidity_allocation():
+    """FIXED: Updated to use new LiquidityManager methods"""
     start = time.time()
-    status, err = safe_component_call("liquidity_manager", liquidity_manager.get_liquidity_status)
-    if err or status is None:
+    if not liquidity_manager:
+        log_api_call("/liquidity-allocation", "error - no liquidity manager", (time.time()-start)*1000)
+        return {
+            "liquidity_ratio": 1.923,
+            "total_pool_usd": config.LM_INITIAL_TOTAL_POOL_USD,
+            "liquidity_percentage": 75.0,
+            "operations_percentage": 25.0,
+            "utilized_amount_usd": 0.0,
+            "available_amount_usd": config.LM_INITIAL_TOTAL_POOL_USD * 0.75,
+            "utilization_pct": 0.0,
+            "stress_test_status": "UNKNOWN",
+            "error": "Liquidity manager not available",
+            "timestamp": time.time()
+        }
+    
+    # Use the new get_current_allocation method
+    allocation_data, err = safe_component_call("liquidity_manager", liquidity_manager.get_current_allocation)
+    if err or allocation_data is None:
         log_api_call("/liquidity-allocation", f"error - {err}", (time.time()-start)*1000)
         return {
-            "liquidity_ratio": 0.0,
+            "liquidity_ratio": 1.923,
             "total_pool_usd": config.LM_INITIAL_TOTAL_POOL_USD,
+            "liquidity_percentage": 75.0,
+            "operations_percentage": 25.0,
+            "utilized_amount_usd": 0.0,
+            "available_amount_usd": config.LM_INITIAL_TOTAL_POOL_USD * 0.75,
+            "utilization_pct": 0.0,
             "stress_test_status": "UNKNOWN",
             "error": err,
             "timestamp": time.time()
         }
-    data = status.__dict__ if hasattr(status, "__dict__") else status
+    
+    data = allocation_data if isinstance(allocation_data, dict) else allocation_data.__dict__
     data["timestamp"] = time.time()
+    
     log_api_call("/liquidity-allocation", "success", (time.time()-start)*1000)
     return data
+
+@router.post("/liquidity-allocation")
+async def adjust_liquidity(dist: LiquidityAllocation):
+    """FIXED: Updated to use new LiquidityManager update_allocation method"""
+    start = time.time()
+    
+    # Check if liquidity manager exists
+    if not liquidity_manager:
+        log_api_call("/liquidity-allocation", "error - no liquidity manager", (time.time()-start)*1000)
+        raise HTTPException(503, "Liquidity manager not available")
+    
+    # Check if update_allocation method exists
+    if not hasattr(liquidity_manager, 'update_allocation'):
+        log_api_call("/liquidity-allocation", "error - method not implemented", (time.time()-start)*1000)
+        logger.warning("Liquidity manager does not have update_allocation method")
+        return {
+            "success": False,
+            "message": "Liquidity adjustment not implemented yet",
+            "status": "not_implemented"
+        }
+    
+    # Validate input ranges
+    if not (0 <= dist.liquidity_pct <= 100) or not (0 <= dist.operations_pct <= 100):
+        raise HTTPException(400, "Percentages must be between 0 and 100")
+    
+    if abs(dist.liquidity_pct + dist.operations_pct - 100) > 0.1:
+        raise HTTPException(400, "Liquidity and operations percentages must sum to 100")
+    
+    try:
+        result, err = safe_component_call("liquidity_manager", liquidity_manager.update_allocation, dist.liquidity_pct, dist.operations_pct)
+        if err:
+            logger.error(f"Liquidity adjustment failed: {err}")
+            log_api_call("/liquidity-allocation", f"error - {err}", (time.time()-start)*1000)
+            raise HTTPException(500, f"Error adjusting liquidity: {err}")
+        
+        log_api_call("/liquidity-allocation", "success", (time.time()-start)*1000)
+        return result
+        
+    except Exception as e:
+        logger.error(f"Unexpected error in liquidity adjustment: {e}", exc_info=True)
+        log_api_call("/liquidity-allocation", f"error - {e}", (time.time()-start)*1000)
+        raise HTTPException(500, f"Unexpected error: {str(e)}")
+
+@router.post("/liquidity-pool-size")
+async def update_pool_size(pool_update: LiquidityPoolSize):
+    """NEW: Update total liquidity pool size"""
+    start = time.time()
+    
+    if not liquidity_manager:
+        log_api_call("/liquidity-pool-size", "error - no liquidity manager", (time.time()-start)*1000)
+        raise HTTPException(503, "Liquidity manager not available")
+    
+    if not hasattr(liquidity_manager, 'update_total_pool'):
+        log_api_call("/liquidity-pool-size", "error - method not available", (time.time()-start)*1000)
+        return {
+            "success": False,
+            "message": "Pool size adjustment not implemented yet",
+            "status": "not_implemented"
+        }
+    
+    # Validate pool size
+    if pool_update.total_pool_usd < 500000:
+        raise HTTPException(400, "Pool size must be at least $500,000")
+    
+    if pool_update.total_pool_usd > 50000000:
+        raise HTTPException(400, "Pool size must be less than $50,000,000")
+    
+    try:
+        result, err = safe_component_call("liquidity_manager", liquidity_manager.update_total_pool, pool_update.total_pool_usd, pool_update.reason)
+        if err:
+            logger.error(f"Pool size update failed: {err}")
+            log_api_call("/liquidity-pool-size", f"error - {err}", (time.time()-start)*1000)
+            raise HTTPException(500, f"Error updating pool size: {err}")
+        
+        log_api_call("/liquidity-pool-size", "success", (time.time()-start)*1000)
+        return result
+        
+    except Exception as e:
+        logger.error(f"Unexpected error in pool size update: {e}", exc_info=True)
+        log_api_call("/liquidity-pool-size", f"error - {e}", (time.time()-start)*1000)
+        raise HTTPException(500, f"Unexpected error: {str(e)}")
+
+@router.get("/liquidity-scaling-recommendations")
+async def get_liquidity_scaling_recommendations():
+    """NEW: Get recommended pool size based on current usage"""
+    start = time.time()
+    
+    if not liquidity_manager:
+        log_api_call("/liquidity-scaling-recommendations", "error - no liquidity manager", (time.time()-start)*1000)
+        return {"error": "Liquidity manager not available"}
+    
+    if not hasattr(liquidity_manager, 'get_recommended_pool_size'):
+        log_api_call("/liquidity-scaling-recommendations", "error - method not available", (time.time()-start)*1000)
+        return {"error": "Pool size recommendations not available"}
+    
+    try:
+        recommendations, err = safe_component_call("liquidity_manager", liquidity_manager.get_recommended_pool_size)
+        if err:
+            log_api_call("/liquidity-scaling-recommendations", f"error - {err}", (time.time()-start)*1000)
+            return {"error": err}
+        
+        log_api_call("/liquidity-scaling-recommendations", "success", (time.time()-start)*1000)
+        return recommendations
+        
+    except Exception as e:
+        logger.error(f"Error getting scaling recommendations: {e}")
+        log_api_call("/liquidity-scaling-recommendations", f"error - {e}", (time.time()-start)*1000)
+        return {"error": str(e)}
+
+@router.get("/liquidity-scaling-metrics")
+async def get_liquidity_scaling_metrics():
+    """NEW: Get comprehensive scaling metrics for dashboard"""
+    start = time.time()
+    
+    if not liquidity_manager:
+        log_api_call("/liquidity-scaling-metrics", "error - no liquidity manager", (time.time()-start)*1000)
+        return {"error": "Liquidity manager not available"}
+    
+    if not hasattr(liquidity_manager, 'get_scaling_metrics'):
+        log_api_call("/liquidity-scaling-metrics", "error - method not available", (time.time()-start)*1000)
+        return {"error": "Scaling metrics not available"}
+    
+    try:
+        metrics, err = safe_component_call("liquidity_manager", liquidity_manager.get_scaling_metrics)
+        if err:
+            log_api_call("/liquidity-scaling-metrics", f"error - {err}", (time.time()-start)*1000)
+            return {"error": err}
+        
+        log_api_call("/liquidity-scaling-metrics", "success", (time.time()-start)*1000)
+        return metrics
+        
+    except Exception as e:
+        logger.error(f"Error getting scaling metrics: {e}")
+        log_api_call("/liquidity-scaling-metrics", f"error - {e}", (time.time()-start)*1000)
+        return {"error": str(e)}
+
+@router.get("/liquidity-health")
+async def get_liquidity_health():
+    """NEW: Get comprehensive liquidity health status"""
+    start = time.time()
+    if not liquidity_manager:
+        log_api_call("/liquidity-health", "error - no liquidity manager", (time.time()-start)*1000)
+        return {"error": "Liquidity manager not available", "health_status": "ERROR"}
+    
+    if not hasattr(liquidity_manager, 'get_liquidity_health'):
+        log_api_call("/liquidity-health", "error - method not available", (time.time()-start)*1000)
+        return {"error": "Liquidity health method not available", "health_status": "ERROR"}
+    
+    health_data, err = safe_component_call("liquidity_manager", liquidity_manager.get_liquidity_health)
+    if err:
+        log_api_call("/liquidity-health", f"error - {err}", (time.time()-start)*1000)
+        return {"error": err, "health_status": "ERROR"}
+    
+    log_api_call("/liquidity-health", "success", (time.time()-start)*1000)
+    return health_data
+
+@router.get("/liquidity-recommendations")
+async def get_liquidity_recommendations():
+    """NEW: Get recommended liquidity allocation"""
+    start = time.time()
+    if not liquidity_manager:
+        log_api_call("/liquidity-recommendations", "error - no liquidity manager", (time.time()-start)*1000)
+        return {"error": "Liquidity manager not available"}
+    
+    if not hasattr(liquidity_manager, 'get_recommended_allocation'):
+        log_api_call("/liquidity-recommendations", "error - method not available", (time.time()-start)*1000)
+        return {"error": "Liquidity recommendations method not available"}
+    
+    recommendations, err = safe_component_call("liquidity_manager", liquidity_manager.get_recommended_allocation)
+    if err:
+        log_api_call("/liquidity-recommendations", f"error - {err}", (time.time()-start)*1000)
+        return {"error": err}
+    
+    log_api_call("/liquidity-recommendations", "success", (time.time()-start)*1000)
+    return recommendations
 
 @router.get("/platform-greeks")
 async def get_platform_greeks():
@@ -177,8 +392,10 @@ async def get_platform_greeks():
             "error": err,
             "timestamp": time.time()
         }
+    
     data = greeks
     data["timestamp"] = time.time()
+    
     log_api_call("/platform-greeks", "success", (time.time()-start)*1000)
     return data
 
@@ -189,7 +406,9 @@ async def get_hedge_execution_feed(limit: int = 10):
     if err or hedges is None:
         log_api_call("/hedge-execution-feed", f"error - {err}", (time.time()-start)*1000)
         raise HTTPException(500, f"Error fetching hedge feed: {err}")
+    
     out = [h.__dict__ for h in hedges]
+    
     log_api_call("/hedge-execution-feed", "success", (time.time()-start)*1000)
     return {"hedges": out, "total_returned": len(out), "timestamp": time.time()}
 
@@ -200,8 +419,10 @@ async def get_hedge_metrics():
     if err or metrics is None:
         log_api_call("/hedge-metrics", f"error - {err}", (time.time()-start)*1000)
         return {"hedges_24h": 0, "total_volume_hedged_btc_24h": 0.0, "timestamp": time.time()}
+    
     data = metrics if isinstance(metrics, dict) else metrics.__dict__
     data["timestamp"] = time.time()
+    
     log_api_call("/hedge-metrics", "success", (time.time()-start)*1000)
     return data
 
@@ -212,83 +433,84 @@ async def get_audit_summary():
     if err or metrics is None:
         log_api_call("/audit-summary", f"error - {err}", (time.time()-start)*1000)
         return {"overall_status": "ERROR", "compliance_score": 0.0, "error": err, "timestamp": time.time()}
+    
     data = metrics.__dict__ if hasattr(metrics, "__dict__") else metrics
     data["timestamp"] = time.time()
+    
     log_api_call("/audit-summary", "success", (time.time()-start)*1000)
     return data
 
 @router.post("/trader-distribution")
 async def adjust_trader_distribution(dist: TraderDistribution):
-    _, err = safe_component_call("bot_trader_simulator", bot_trader_simulator.adjust_trader_distribution, dist.total_traders)
-    if err:
-        raise HTTPException(500, f"Error adjusting trader distribution: {err}")
-    return {"status": "success", "total_traders": dist.total_traders}
-
-@router.post("/liquidity-allocation")
-async def adjust_liquidity(dist: LiquidityAllocation):
-    """FIXED: Enhanced error handling for liquidity adjustment"""
+    """Enhanced trader distribution with optional auto-scaling"""
     start = time.time()
     
-    # Check if liquidity manager exists
-    if not liquidity_manager:
-        log_api_call("/liquidity-allocation", "error - no liquidity manager", (time.time()-start)*1000)
-        raise HTTPException(503, "Liquidity manager not available")
+    # Update user count in liquidity manager if available
+    if liquidity_manager and hasattr(liquidity_manager, 'update_user_count'):
+        try:
+            liquidity_manager.update_user_count(dist.total_traders)
+            logger.info(f"Updated liquidity manager user count to {dist.total_traders}")
+            
+            # Auto-scale pool if requested
+            if dist.auto_scale_liquidity and hasattr(liquidity_manager, 'auto_scale_pool_for_traders'):
+                scale_result, scale_err = safe_component_call("liquidity_manager", liquidity_manager.auto_scale_pool_for_traders, dist.total_traders)
+                if scale_result and scale_result.get("success", False):
+                    logger.info(f"Auto-scaled pool to ${scale_result['new_pool_usd']:,.0f} for {dist.total_traders} traders")
+                    
+        except Exception as e:
+            logger.warning(f"Failed to update liquidity manager user count: {e}")
     
-    # Check if adjust_allocation method exists
-    if not hasattr(liquidity_manager, 'adjust_allocation'):
-        log_api_call("/liquidity-allocation", "error - method not implemented", (time.time()-start)*1000)
-        logger.warning("Liquidity manager does not have adjust_allocation method")
-        # Return success anyway to avoid breaking frontend
-        return {"status": "success", "message": "Liquidity adjustment not implemented yet"}
-        
-    # Validate input ranges
-    if not (0 <= dist.liquidity_pct <= 100) or not (0 <= dist.operations_pct <= 100):
-        raise HTTPException(400, "Percentages must be between 0 and 100")
-        
-    if dist.liquidity_pct + dist.operations_pct != 100:
-        raise HTTPException(400, "Liquidity and operations percentages must sum to 100")
+    _, err = safe_component_call("bot_trader_simulator", bot_trader_simulator.adjust_trader_distribution, dist.total_traders)
+    if err:
+        log_api_call("/trader-distribution", f"error - {err}", (time.time()-start)*1000)
+        raise HTTPException(500, f"Error adjusting trader distribution: {err}")
     
-    try:
-        _, err = safe_component_call("liquidity_manager", liquidity_manager.adjust_allocation, dist.liquidity_pct, dist.operations_pct)
-        if err:
-            logger.error(f"Liquidity adjustment failed: {err}")
-            log_api_call("/liquidity-allocation", f"error - {err}", (time.time()-start)*1000)
-            raise HTTPException(500, f"Error adjusting liquidity: {err}")
-        
-        log_api_call("/liquidity-allocation", "success", (time.time()-start)*1000)
-        return {"status": "success", "liquidity_pct": dist.liquidity_pct, "operations_pct": dist.operations_pct}
-        
-    except Exception as e:
-        logger.error(f"Unexpected error in liquidity adjustment: {e}", exc_info=True)
-        log_api_call("/liquidity-allocation", f"error - {e}", (time.time()-start)*1000)
-        raise HTTPException(500, f"Unexpected error: {str(e)}")
+    log_api_call("/trader-distribution", "success", (time.time()-start)*1000)
+    return {"status": "success", "total_traders": dist.total_traders, "auto_scaled": dist.auto_scale_liquidity}
 
 @router.post("/reset-parameters")
 async def reset_parameters():
+    """Reset all system parameters to defaults"""
+    results = {}
+    
     if liquidity_manager and hasattr(liquidity_manager, 'reset_to_defaults'):
-        liquidity_manager.reset_to_defaults()
+        try:
+            liquidity_manager.reset_to_defaults()
+            results["liquidity_manager"] = "reset"
+        except Exception as e:
+            results["liquidity_manager"] = f"error: {e}"
+    
     if bot_trader_simulator and hasattr(bot_trader_simulator, 'reset_to_defaults'):
-        bot_trader_simulator.reset_to_defaults()
-    return {"status": "success"}
+        try:
+            bot_trader_simulator.reset_to_defaults()
+            results["bot_trader_simulator"] = "reset"
+        except Exception as e:
+            results["bot_trader_simulator"] = f"error: {e}"
+    
+    return {"status": "success", "results": results}
 
 @router.post("/export-csv")
 async def export_aggregated_csv():
-    """NEW: Export aggregated platform summary data instead of individual transactions"""
+    """Export aggregated platform summary data instead of individual transactions"""
     try:
         # Gather all aggregated data
         trading_stats, _ = safe_component_call("bot_trader_simulator", bot_trader_simulator.get_trading_statistics)
-        hedge_metrics, _ = safe_component_call("hedge_feed_manager", hedge_feed_manager.get_hedge_metrics) 
+        hedge_metrics, _ = safe_component_call("hedge_feed_manager", hedge_feed_manager.get_hedge_metrics)
         platform_greeks, _ = safe_component_call("position_manager", position_manager.get_aggregate_platform_greeks)
         revenue_metrics, _ = safe_component_call("revenue_engine", revenue_engine.get_current_metrics)
-        liquidity_status, _ = safe_component_call("liquidity_manager", liquidity_manager.get_liquidity_status)
+        liquidity_allocation, _ = safe_component_call("liquidity_manager", liquidity_manager.get_current_allocation)
         bot_status, _ = safe_component_call("bot_trader_simulator", bot_trader_simulator.get_current_activity)
+        audit_summary, _ = safe_component_call("audit_engine", audit_engine.get_24h_metrics)
+        scaling_metrics, _ = safe_component_call("liquidity_manager", liquidity_manager.get_scaling_metrics) if hasattr(liquidity_manager, 'get_scaling_metrics') else (None, None)
         
         # Fallbacks for missing data
         trading_stats = trading_stats or {}
         hedge_metrics = hedge_metrics or {}
         platform_greeks = platform_greeks or {}
         revenue_metrics = revenue_metrics.__dict__ if hasattr(revenue_metrics, "__dict__") else (revenue_metrics or {})
-        liquidity_status = liquidity_status.__dict__ if hasattr(liquidity_status, "__dict__") else (liquidity_status or {})
+        liquidity_allocation = liquidity_allocation if isinstance(liquidity_allocation, dict) else {}
+        audit_summary = audit_summary.__dict__ if hasattr(audit_summary, "__dict__") else (audit_summary or {})
+        scaling_metrics = scaling_metrics or {}
         
         # Extract trader profiles
         trader_profiles = {}
@@ -314,7 +536,6 @@ async def export_aggregated_csv():
         csv_writer.writerow(["Total Premium Volume USD (24h)", f"${trading_stats.get('total_premium_volume_usd_24h', 0):,.2f}"])
         csv_writer.writerow(["Average Premium per Trade USD", f"${trading_stats.get('avg_premium_received_usd_24h', 0):,.2f}"])
         csv_writer.writerow(["Call/Put Ratio (24h)", trading_stats.get("call_put_ratio_24h", 0)])
-        csv_writer.writerow(["Most Active Expiry (minutes)", trading_stats.get("most_active_expiry_minutes_24h", 0)])
         csv_writer.writerow(["", ""])
         
         # Trader Performance
@@ -324,7 +545,7 @@ async def export_aggregated_csv():
             csv_writer.writerow([f"{trader_type.capitalize()} Success Rate", f"{data['success_rate']:.1%}"])
         csv_writer.writerow(["", ""])
         
-        # Hedge Summary  
+        # Hedge Summary
         csv_writer.writerow(["--- HEDGE SUMMARY ---", ""])
         csv_writer.writerow(["Total Hedges (24h)", hedge_metrics.get("hedges_24h", 0)])
         csv_writer.writerow(["Total Volume Hedged BTC (24h)", f"{hedge_metrics.get('total_volume_hedged_btc_24h', 0):.4f}"])
@@ -339,6 +560,7 @@ async def export_aggregated_csv():
         csv_writer.writerow(["Net Portfolio Theta USD", f"${platform_greeks.get('net_portfolio_theta_usd', 0):,.2f}"])
         csv_writer.writerow(["Risk Status", platform_greeks.get("risk_status_message", "Unknown")])
         csv_writer.writerow(["Open Options Count", platform_greeks.get("open_options_count", 0)])
+        csv_writer.writerow(["Open Hedges Count", platform_greeks.get("open_hedges_count", 0)])
         csv_writer.writerow(["", ""])
         
         # Revenue Metrics
@@ -347,23 +569,45 @@ async def export_aggregated_csv():
         csv_writer.writerow(["Daily Revenue USD", f"${revenue_metrics.get('daily_revenue_usd', 0):,.2f}"])
         csv_writer.writerow(["", ""])
         
-        # Liquidity Metrics  
+        # Liquidity Metrics
         csv_writer.writerow(["--- LIQUIDITY METRICS ---", ""])
-        csv_writer.writerow(["Liquidity Ratio", f"{liquidity_status.get('liquidity_ratio', 0):.2f}"])
-        csv_writer.writerow(["Total Pool USD", f"${liquidity_status.get('total_pool_usd', 0):,.2f}"])
-        csv_writer.writerow(["Active Users", liquidity_status.get("active_users", 0)])
-        csv_writer.writerow(["Stress Test Status", liquidity_status.get("stress_test_status", "Unknown")])
+        csv_writer.writerow(["Total Pool USD", f"${liquidity_allocation.get('total_pool_usd', 0):,.2f}"])
+        csv_writer.writerow(["Liquidity Allocation %", f"{liquidity_allocation.get('liquidity_percentage', 0):.1f}%"])
+        csv_writer.writerow(["Operations Allocation %", f"{liquidity_allocation.get('operations_percentage', 0):.1f}%"])
+        csv_writer.writerow(["Utilized Amount USD", f"${liquidity_allocation.get('utilized_amount_usd', 0):,.2f}"])
+        csv_writer.writerow(["Available Amount USD", f"${liquidity_allocation.get('available_amount_usd', 0):,.2f}"])
+        csv_writer.writerow(["Utilization %", f"{liquidity_allocation.get('utilization_pct', 0):.1f}%"])
+        csv_writer.writerow(["Stress Test Status", liquidity_allocation.get("stress_test_status", "Unknown")])
+        csv_writer.writerow(["Active Users", liquidity_allocation.get("active_users", 0)])
+        csv_writer.writerow(["", ""])
+        
+        # Scaling Metrics (if available)
+        if scaling_metrics:
+            csv_writer.writerow(["--- SCALING METRICS ---", ""])
+            csv_writer.writerow(["Recommended Pool Size USD", f"${scaling_metrics.get('recommended_pool_size', 0):,.2f}"])
+            csv_writer.writerow(["Scaling Factor Needed", f"{scaling_metrics.get('scaling_factor_needed', 1):.2f}x"])
+            csv_writer.writerow(["Pool Per Trader USD", f"${scaling_metrics.get('pool_per_trader', 0):,.0f}"])
+            csv_writer.writerow(["Current Hedge Capacity BTC", f"{scaling_metrics.get('current_hedge_capacity_btc', 0):.4f}"])
+            csv_writer.writerow(["Hedge Capacity Improvement %", f"{scaling_metrics.get('hedge_capacity_improvement', 0):+.1f}%"])
+            csv_writer.writerow(["Capital Efficiency (Traders/$1M)", f"{scaling_metrics.get('capital_efficiency', 0):.1f}"])
+            csv_writer.writerow(["", ""])
+        
+        # Audit Summary
+        csv_writer.writerow(["--- AUDIT SUMMARY ---", ""])
+        csv_writer.writerow(["Compliance Status", audit_summary.get("overall_status", "Unknown")])
+        csv_writer.writerow(["Compliance Score", f"{audit_summary.get('compliance_score', 0):.1f}%"])
+        csv_writer.writerow(["Trades Tracked 24h", audit_summary.get("option_trades_executed_24h", 0)])
+        csv_writer.writerow(["Premium Volume Tracked USD", f"${audit_summary.get('gross_option_premiums_24h_usd', 0):,.2f}"])
         
         # Get CSV content
         csv_content = output.getvalue()
         output.close()
         
         # Return as StreamingResponse
-        buffer = io.BytesIO(csv_content.encode('utf-8'))
         headers = {"Content-Disposition": "attachment; filename=atticus_platform_summary.csv"}
         return StreamingResponse(
-            io.BytesIO(csv_content.encode('utf-8')), 
-            media_type="text/csv", 
+            io.BytesIO(csv_content.encode('utf-8')),
+            media_type="text/csv",
             headers=headers
         )
         
@@ -373,4 +617,49 @@ async def export_aggregated_csv():
 
 @router.get("/debug-system-status")
 async def debug_system_status():
-    return {"api_call_count": api_call_count, "performance_metrics": performance_metrics, "timestamp": time.time()}
+    """Get detailed system status for debugging"""
+    return {
+        "api_call_count": api_call_count,
+        "performance_metrics": performance_metrics,
+        "component_status": {
+            "revenue_engine": revenue_engine is not None,
+            "position_manager": position_manager is not None,
+            "liquidity_manager": liquidity_manager is not None,
+            "bot_trader_simulator": bot_trader_simulator is not None,
+            "hedge_feed_manager": hedge_feed_manager is not None,
+            "audit_engine": audit_engine is not None
+        },
+        "timestamp": time.time()
+    }
+
+# Additional liquidity-specific debug endpoints
+@router.get("/debug-liquidity-status")
+async def debug_liquidity_status():
+    """Debug liquidity manager internal state"""
+    if not liquidity_manager:
+        return {"error": "Liquidity manager not available"}
+    
+    try:
+        debug_info = {}
+        
+        if hasattr(liquidity_manager, 'get_current_allocation'):
+            debug_info["current_allocation"] = liquidity_manager.get_current_allocation()
+        
+        if hasattr(liquidity_manager, 'get_liquidity_health'):
+            debug_info["health_status"] = liquidity_manager.get_liquidity_health()
+        
+        if hasattr(liquidity_manager, 'get_recommended_allocation'):
+            debug_info["recommendations"] = liquidity_manager.get_recommended_allocation()
+            
+        if hasattr(liquidity_manager, 'get_scaling_metrics'):
+            debug_info["scaling_metrics"] = liquidity_manager.get_scaling_metrics()
+        
+        debug_info["methods_available"] = [
+            method for method in dir(liquidity_manager) 
+            if not method.startswith('_') and callable(getattr(liquidity_manager, method))
+        ]
+        
+        return debug_info
+        
+    except Exception as e:
+        return {"error": str(e)}
