@@ -5,9 +5,9 @@ import logging
 import asyncio
 from contextlib import asynccontextmanager
 from typing import Optional
-
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from backend import config
 from backend.advanced_volatility_engine import AdvancedVolatilityEngine
@@ -170,12 +170,20 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# CORS middleware
+# CORS middleware - FIXED: Explicit origins including Lovable preview
+origins = [
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    "https://preview--atticus-insight-hub.lovable.app",  # Added explicit Lovable preview
+    "https://atticus-insight-hub.lovable.app",
+    "https://atticus-demo-dashboard.onrender.com"
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=config.CORS_ORIGINS,
+    allow_origins=origins,
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
     allow_headers=["*"],
     expose_headers=["Content-Disposition"],
     max_age=86400,
