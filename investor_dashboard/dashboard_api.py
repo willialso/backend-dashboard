@@ -593,6 +593,30 @@ async def get_hedge_metrics():
     log_api_call("/hedge-metrics", "success", (time.time()-start)*1000)
     return safe_convert_dict(data)
 
+# CRITICAL FIX: Missing debug-hedge-pnl endpoint that was causing null values
+@router.get("/debug-hedge-pnl")
+async def debug_hedge_pnl():
+    """Debug hedge P&L calculation step by step"""
+    start = time.time()
+    
+    if not hedge_feed_manager:
+        log_api_call("/debug-hedge-pnl", "error - no hedge manager", (time.time()-start)*1000)
+        return safe_convert_dict({"error": "Hedge feed manager not available"})
+    
+    if not hasattr(hedge_feed_manager, 'debug_pnl_calculation'):
+        log_api_call("/debug-hedge-pnl", "error - method not available", (time.time()-start)*1000)
+        return safe_convert_dict({"error": "Debug P&L method not available"})
+    
+    try:
+        debug_result = hedge_feed_manager.debug_pnl_calculation()
+        log_api_call("/debug-hedge-pnl", "success", (time.time()-start)*1000)
+        return safe_convert_dict(debug_result)
+        
+    except Exception as e:
+        logger.error(f"Debug hedge P&L failed: {e}")
+        log_api_call("/debug-hedge-pnl", f"error - {e}", (time.time()-start)*1000)
+        return safe_convert_dict({"error": str(e)})
+
 @router.get("/audit-summary")
 async def get_audit_summary():
     """CRITICAL FIX: Added data consistency validation"""
@@ -787,37 +811,15 @@ async def complete_system_reset():
     # CRITICAL FIX: Reset hedge feed manager - CLEAR ALL HEDGE VOLUME/METRICS
     if hedge_feed_manager:
         try:
-            # Clear recent hedges list
-            if hasattr(hedge_feed_manager, 'recent_hedges'):
-                hedge_feed_manager.recent_hedges.clear()
-                logger.info("✅ Cleared hedge feed manager recent_hedges")
-            
-            # CRITICAL: Reset ALL hedge volume and metrics
-            hedge_attributes = [
-                'total_hedges_executed',
-                'total_hedge_volume_btc',
-                'total_hedge_volume_usd',
-                'hedge_pnl_accumulator',
-                'daily_hedge_volume',
-                'total_hedge_value_usd_24h'
-            ]
-            
-            for attr in hedge_attributes:
-                if hasattr(hedge_feed_manager, attr):
-                    setattr(hedge_feed_manager, attr, 0.0)
-                    logger.debug(f"✅ Reset hedge manager {attr} to 0")
-            
-            # Clear hedge tracking dictionaries
-            for dict_attr in ['hedge_metrics_24h', 'hedge_history', 'daily_hedge_data']:
-                if hasattr(hedge_feed_manager, dict_attr):
-                    val = getattr(hedge_feed_manager, dict_attr)
-                    if isinstance(val, (list, dict)):
-                        val.clear()
-                        logger.debug(f"✅ Cleared hedge manager {dict_attr}")
-            
-            # Reset start time
-            if hasattr(hedge_feed_manager, 'start_time'):
-                hedge_feed_manager.start_time = time.time()
+            # Use the reset_hedge_metrics method if available
+            if hasattr(hedge_feed_manager, 'reset_hedge_metrics'):
+                hedge_feed_manager.reset_hedge_metrics()
+                logger.info("✅ Reset hedge feed manager using reset_hedge_metrics method")
+            else:
+                # Manual reset
+                if hasattr(hedge_feed_manager, 'recent_hedges'):
+                    hedge_feed_manager.recent_hedges.clear()
+                    logger.info("✅ Cleared hedge feed manager recent_hedges manually")
             
             results["hedge_feed_manager"] = "volume_metrics_completely_reset"
             logger.info("✅ Hedge feed manager volume/metrics completely cleared")
