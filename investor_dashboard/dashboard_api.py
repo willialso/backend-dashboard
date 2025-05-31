@@ -937,7 +937,7 @@ async def complete_system_reset():
 
 @router.post("/export-csv")
 async def export_aggregated_csv():
-    """Export aggregated platform summary data instead of individual transactions"""
+    """FIXED: Export cleaned CSV with removed sections and added hedge P&L"""
     try:
         # CRITICAL FIX: Validate data consistency before export
         if not validate_data_consistency():
@@ -950,9 +950,6 @@ async def export_aggregated_csv():
         platform_greeks, _ = safe_component_call("position_manager", position_manager.get_aggregate_platform_greeks)
         revenue_metrics, _ = safe_component_call("revenue_engine", revenue_engine.get_current_metrics)
         liquidity_allocation, _ = safe_component_call("liquidity_manager", liquidity_manager.get_current_allocation)
-        bot_status, _ = safe_component_call("bot_trader_simulator", bot_trader_simulator.get_current_activity)
-        audit_summary, _ = safe_component_call("audit_engine", audit_engine.get_24h_metrics)
-        scaling_metrics, _ = safe_component_call("liquidity_manager", liquidity_manager.get_scaling_metrics) if hasattr(liquidity_manager, 'get_scaling_metrics') else (None, None)
         
         # Fallbacks for missing data
         trading_stats = trading_stats or {}
@@ -960,17 +957,6 @@ async def export_aggregated_csv():
         platform_greeks = platform_greeks or {}
         revenue_metrics = revenue_metrics.__dict__ if hasattr(revenue_metrics, "__dict__") else (revenue_metrics or {})
         liquidity_allocation = liquidity_allocation if isinstance(liquidity_allocation, dict) else {}
-        audit_summary = audit_summary.__dict__ if hasattr(audit_summary, "__dict__") else (audit_summary or {})
-        scaling_metrics = scaling_metrics or {}
-        
-        # Extract trader profiles
-        trader_profiles = {}
-        if bot_trader_simulator:
-            for trader_type, profile in bot_trader_simulator.trader_profiles.items():
-                trader_profiles[trader_type.value] = {
-                    "count": profile["count"],
-                    "success_rate": profile["success_rate"]
-                }
         
         # Create CSV content
         output = io.StringIO()
@@ -982,7 +968,7 @@ async def export_aggregated_csv():
         csv_writer.writerow(["Data Consistency Status", "Validated" if validate_data_consistency() else "Inconsistent"])
         csv_writer.writerow(["", ""])
         
-        # Trading Summary
+        # Trading Summary (KEEP)
         csv_writer.writerow(["--- TRADING SUMMARY ---", ""])
         csv_writer.writerow(["Total Trades (24h)", trading_stats.get("total_trades_24h", 0)])
         csv_writer.writerow(["Total Premium Volume USD (24h)", f"${trading_stats.get('total_premium_volume_usd_24h', 0):,.2f}"])
@@ -990,21 +976,17 @@ async def export_aggregated_csv():
         csv_writer.writerow(["Call/Put Ratio (24h)", trading_stats.get("call_put_ratio_24h", 0)])
         csv_writer.writerow(["", ""])
         
-        # Trader Performance
-        csv_writer.writerow(["--- TRADER PERFORMANCE ---", ""])
-        for trader_type, data in trader_profiles.items():
-            csv_writer.writerow([f"{trader_type.capitalize()} Count", data["count"]])
-            csv_writer.writerow([f"{trader_type.capitalize()} Success Rate", f"{data['success_rate']:.1%}"])
-        csv_writer.writerow(["", ""])
+        # REMOVED: Trader Performance section (as requested)
         
-        # Hedge Summary
+        # Hedge Summary (KEEP + ADD P&L)
         csv_writer.writerow(["--- HEDGE SUMMARY ---", ""])
         csv_writer.writerow(["Total Hedges (24h)", hedge_metrics.get("hedges_24h", 0)])
         csv_writer.writerow(["Total Volume Hedged BTC (24h)", f"{hedge_metrics.get('total_volume_hedged_btc_24h', 0):.4f}"])
         csv_writer.writerow(["Average Execution Time (ms)", f"{hedge_metrics.get('avg_execution_time_ms', 0):.1f}"])
+        csv_writer.writerow(["Hedge P&L (24h)", f"${hedge_metrics.get('hedge_pnl_24h', 0):.2f}"])  # ✅ ADDED P&L
         csv_writer.writerow(["", ""])
         
-        # Platform Greeks (Risk Metrics)
+        # Platform Greeks (Risk Metrics) (KEEP)
         csv_writer.writerow(["--- PLATFORM RISK METRICS ---", ""])
         csv_writer.writerow(["Net Portfolio Delta BTC", f"{platform_greeks.get('net_portfolio_delta_btc', 0):.4f}"])
         csv_writer.writerow(["Net Portfolio Gamma BTC", f"{platform_greeks.get('net_portfolio_gamma_btc', 0):.6f}"])
@@ -1015,13 +997,13 @@ async def export_aggregated_csv():
         csv_writer.writerow(["Open Hedges Count", platform_greeks.get("open_hedges_count", 0)])
         csv_writer.writerow(["", ""])
         
-        # Revenue Metrics
+        # Revenue Metrics (KEEP)
         csv_writer.writerow(["--- REVENUE METRICS ---", ""])
         csv_writer.writerow(["Platform Markup %", f"{revenue_metrics.get('platform_markup_pct', 0):.2f}%"])
         csv_writer.writerow(["Daily Revenue USD", f"${revenue_metrics.get('daily_revenue_usd', 0):,.2f}"])
         csv_writer.writerow(["", ""])
         
-        # Liquidity Metrics
+        # Liquidity Metrics (KEEP)
         csv_writer.writerow(["--- LIQUIDITY METRICS ---", ""])
         csv_writer.writerow(["Total Pool USD", f"${liquidity_allocation.get('total_pool_usd', 0):,.2f}"])
         csv_writer.writerow(["Liquidity Allocation %", f"{liquidity_allocation.get('liquidity_percentage', 0):.1f}%"])
@@ -1031,26 +1013,9 @@ async def export_aggregated_csv():
         csv_writer.writerow(["Utilization %", f"{liquidity_allocation.get('utilization_pct', 0):.1f}%"])
         csv_writer.writerow(["Stress Test Status", liquidity_allocation.get("stress_test_status", "Unknown")])
         csv_writer.writerow(["Active Users", liquidity_allocation.get("active_users", 0)])
-        csv_writer.writerow(["", ""])
         
-        # Scaling Metrics (if available)
-        if scaling_metrics:
-            csv_writer.writerow(["--- SCALING METRICS ---", ""])
-            csv_writer.writerow(["Recommended Pool Size USD", f"${scaling_metrics.get('recommended_pool_size', 0):,.2f}"])
-            csv_writer.writerow(["Scaling Factor Needed", f"{scaling_metrics.get('scaling_factor_needed', 1):.2f}x"])
-            csv_writer.writerow(["Pool Per Trader USD", f"${scaling_metrics.get('pool_per_trader', 0):,.0f}"])
-            csv_writer.writerow(["Current Hedge Capacity BTC", f"{scaling_metrics.get('current_hedge_capacity_btc', 0):.4f}"])
-            csv_writer.writerow(["Hedge Capacity Improvement %", f"{scaling_metrics.get('hedge_capacity_improvement', 0):+.1f}%"])
-            csv_writer.writerow(["Capital Efficiency (Traders/$1M)", f"{scaling_metrics.get('capital_efficiency', 0):.1f}"])
-            csv_writer.writerow(["", ""])
-        
-        # Audit Summary - FIXED with consistency note
-        csv_writer.writerow(["--- AUDIT SUMMARY ---", ""])
-        csv_writer.writerow(["Compliance Status", audit_summary.get("overall_status", "Unknown")])
-        csv_writer.writerow(["Compliance Score", f"{audit_summary.get('compliance_score', 0):.1f}%"])
-        csv_writer.writerow(["Trades Tracked 24h", audit_summary.get("option_trades_executed_24h", 0)])
-        csv_writer.writerow(["Premium Volume Tracked USD", f"${audit_summary.get('gross_option_premiums_24h_usd', 0):,.2f}"])
-        csv_writer.writerow(["Data Consistency", "Validated" if validate_data_consistency() else "Inconsistent"])
+        # REMOVED: Scaling Metrics section (as requested)
+        # REMOVED: Audit Summary section (as requested)
         
         # Get CSV content
         csv_content = output.getvalue()
