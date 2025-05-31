@@ -559,6 +559,197 @@ async def reset_parameters():
     
     return {"status": "success", "results": results, "data_consistency_restored": True}
 
+# CRITICAL NEW FIX: Complete system reset endpoint
+@router.post("/complete-system-reset")
+async def complete_system_reset():
+    """COMPREHENSIVE: Reset ALL system data to fresh startup state"""
+    start = time.time()
+    results = {}
+    
+    logger.warning("🔄 COMPLETE SYSTEM RESET INITIATED - Clearing all accumulated data")
+    
+    # Reset bot trader simulator - CLEAR ALL HISTORICAL DATA
+    if bot_trader_simulator:
+        try:
+            # Clear all historical trading data
+            if hasattr(bot_trader_simulator, 'recent_trades_log'):
+                bot_trader_simulator.recent_trades_log.clear()
+                logger.info("✅ Cleared bot trader recent_trades_log")
+            
+            # Reset trade counters
+            if hasattr(bot_trader_simulator, 'total_trades_executed'):
+                bot_trader_simulator.total_trades_executed = 0
+                logger.info("✅ Reset bot trader total_trades_executed to 0")
+            
+            if hasattr(bot_trader_simulator, 'total_premium_collected_usd'):
+                bot_trader_simulator.total_premium_collected_usd = 0.0
+                logger.info("✅ Reset bot trader total_premium_collected_usd to 0")
+            
+            # Reset start time for fresh 24h window
+            if hasattr(bot_trader_simulator, 'start_time'):
+                bot_trader_simulator.start_time = time.time()
+                logger.info("✅ Reset bot trader start_time")
+            
+            # Clear any other accumulated metrics
+            if hasattr(bot_trader_simulator, 'daily_metrics'):
+                bot_trader_simulator.daily_metrics = {}
+                
+            results["bot_trader_simulator"] = "completely_reset"
+            
+        except Exception as e:
+            logger.error(f"❌ Error resetting bot trader simulator: {e}")
+            results["bot_trader_simulator"] = f"error: {e}"
+    
+    # Reset hedge feed manager - CLEAR ALL HEDGE HISTORY
+    if hedge_feed_manager:
+        try:
+            # Clear recent hedges list
+            if hasattr(hedge_feed_manager, 'recent_hedges'):
+                hedge_feed_manager.recent_hedges.clear()
+                logger.info("✅ Cleared hedge feed manager recent_hedges")
+            
+            # Reset hedge counters
+            if hasattr(hedge_feed_manager, 'total_hedges_executed'):
+                hedge_feed_manager.total_hedges_executed = 0
+                
+            if hasattr(hedge_feed_manager, 'total_hedge_volume_btc'):
+                hedge_feed_manager.total_hedge_volume_btc = 0.0
+                
+            # Reset start time
+            if hasattr(hedge_feed_manager, 'start_time'):
+                hedge_feed_manager.start_time = time.time()
+                
+            results["hedge_feed_manager"] = "completely_reset"
+            
+        except Exception as e:
+            logger.error(f"❌ Error resetting hedge feed manager: {e}")
+            results["hedge_feed_manager"] = f"error: {e}"
+    
+    # Reset position manager - CLEAR ALL POSITIONS
+    if position_manager:
+        try:
+            # Clear all position lists
+            if hasattr(position_manager, 'positions'):
+                position_manager.positions.clear()
+                logger.info("✅ Cleared position manager positions")
+            
+            if hasattr(position_manager, 'open_option_positions'):
+                position_manager.open_option_positions.clear()
+                logger.info("✅ Cleared position manager open_option_positions")
+            
+            if hasattr(position_manager, 'open_hedge_positions'):
+                position_manager.open_hedge_positions.clear()
+                logger.info("✅ Cleared position manager open_hedge_positions")
+            
+            # Reset portfolio delta
+            if hasattr(position_manager, 'total_portfolio_delta'):
+                position_manager.total_portfolio_delta = 0.0
+                logger.info("✅ Reset position manager total_portfolio_delta to 0")
+            
+            # Reset any other metrics
+            for attr in ['total_gamma', 'total_vega', 'total_theta']:
+                if hasattr(position_manager, attr):
+                    setattr(position_manager, attr, 0.0)
+                    
+            results["position_manager"] = "completely_reset"
+            
+        except Exception as e:
+            logger.error(f"❌ Error resetting position manager: {e}")
+            results["position_manager"] = f"error: {e}"
+    
+    # Reset audit engine - CLEAR ALL TRACKING
+    if audit_engine:
+        try:
+            # Use existing reset method if available
+            if hasattr(audit_engine, 'reset_metrics'):
+                audit_engine.reset_metrics()
+                logger.info("✅ Reset audit engine metrics")
+            
+            # Additional manual cleanup
+            for attr in ['option_premium_records', 'hedging_pnl_records', 'operational_cost_records', 
+                        'option_trade_execution_records', 'hedge_execution_records']:
+                if hasattr(audit_engine, attr):
+                    getattr(audit_engine, attr).clear()
+                    
+            # Reset counters
+            if hasattr(audit_engine, 'api_error_count'):
+                audit_engine.api_error_count = 0
+            if hasattr(audit_engine, 'total_api_requests'):
+                audit_engine.total_api_requests = 0
+            if hasattr(audit_engine, 'start_time'):
+                audit_engine.start_time = time.time()
+                
+            results["audit_engine"] = "completely_reset"
+            
+        except Exception as e:
+            logger.error(f"❌ Error resetting audit engine: {e}")
+            results["audit_engine"] = f"error: {e}"
+    
+    # Reset revenue engine - CLEAR ACCUMULATED REVENUE
+    if revenue_engine:
+        try:
+            # Reset any accumulated revenue metrics
+            if hasattr(revenue_engine, 'daily_revenue_accumulator'):
+                revenue_engine.daily_revenue_accumulator = 0.0
+                
+            if hasattr(revenue_engine, 'start_time'):
+                revenue_engine.start_time = time.time()
+                
+            # Clear any revenue tracking lists
+            for attr in ['revenue_records', 'daily_metrics']:
+                if hasattr(revenue_engine, attr):
+                    if isinstance(getattr(revenue_engine, attr), list):
+                        getattr(revenue_engine, attr).clear()
+                    elif isinstance(getattr(revenue_engine, attr), dict):
+                        getattr(revenue_engine, attr).clear()
+                        
+            results["revenue_engine"] = "reset_attempted"
+            
+        except Exception as e:
+            logger.error(f"❌ Error resetting revenue engine: {e}")
+            results["revenue_engine"] = f"error: {e}"
+    
+    # Reset liquidity manager utilization
+    if liquidity_manager:
+        try:
+            # Clear transaction records if they exist
+            if hasattr(liquidity_manager, 'recent_transactions'):
+                liquidity_manager.recent_transactions.clear()
+                
+            if hasattr(liquidity_manager, 'hedge_transactions'):
+                liquidity_manager.hedge_transactions.clear()
+                
+            # Force recalculation with cleared data
+            if hasattr(liquidity_manager, '_recalculate_utilization'):
+                liquidity_manager._recalculate_utilization()
+                
+            results["liquidity_manager"] = "reset_attempted"
+            
+        except Exception as e:
+            logger.error(f"❌ Error resetting liquidity manager: {e}")
+            results["liquidity_manager"] = f"error: {e}"
+    
+    # Force audit sync after complete reset
+    force_audit_sync()
+    
+    # Reset API call counter
+    global api_call_count, performance_metrics
+    api_call_count = 0
+    performance_metrics.clear()
+    
+    log_api_call("/complete-system-reset", "success", (time.time()-start)*1000)
+    
+    logger.warning("✅ COMPLETE SYSTEM RESET COMPLETED - All components reset to fresh startup state")
+    
+    return {
+        "status": "complete_reset_executed",
+        "message": "All system data reset to fresh startup state",
+        "components_reset": results,
+        "data_consistency_restored": True,
+        "timestamp": time.time(),
+        "next_action": "Dashboard should show fresh startup metrics within 30 seconds"
+    }
+
 @router.post("/export-csv")
 async def export_aggregated_csv():
     """Export aggregated platform summary data instead of individual transactions"""
