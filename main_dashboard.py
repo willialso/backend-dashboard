@@ -3,6 +3,7 @@
 import time
 import logging
 import asyncio
+import os
 from contextlib import asynccontextmanager
 from typing import Optional
 from fastapi import FastAPI
@@ -25,6 +26,15 @@ from investor_dashboard.dashboard_api import router as dashboard_router
 # Configure root logger
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
+
+# CRITICAL FIX: Environment detection
+ENVIRONMENT = os.getenv("RENDER", "local")
+IS_PRODUCTION = ENVIRONMENT != "local"
+
+if IS_PRODUCTION:
+    logger.info("🌐 Running in PRODUCTION mode on Render")
+else:
+    logger.info("🔧 Running in DEVELOPMENT mode")
 
 # Global component instances
 data_feed_manager: Optional[DataFeedManager] = None
@@ -271,24 +281,39 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# CORS middleware - Explicit origins including Lovable preview
-origins = [
-    "http://localhost:3000",
-    "http://127.0.0.1:3000",
-    "https://preview--atticus-insight-hub.lovable.app",
-    "https://atticus-insight-hub.lovable.app",
-    "https://atticus-demo-dashboard.onrender.com"
-]
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=origins,
-    allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
-    allow_headers=["*"],
-    expose_headers=["Content-Disposition"],
-    max_age=86400,
-)
+# CRITICAL FIX: CORS Configuration for Render Production
+if IS_PRODUCTION:
+    logger.warning("🌐 PRODUCTION: Using permissive CORS for debugging")
+    # Permissive CORS for production debugging
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],  # CRITICAL: Allow all origins for debugging
+        allow_credentials=False,  # CRITICAL: Must be False when using "*"
+        allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
+        allow_headers=["*"],
+        expose_headers=["Content-Disposition"],
+        max_age=86400,
+    )
+else:
+    logger.info("🔧 DEVELOPMENT: Using restricted CORS")
+    # Restricted CORS for development
+    origins = [
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "https://preview--atticus-insight-hub.lovable.app",
+        "https://atticus-insight-hub.lovable.app",
+        "https://atticus-demo-dashboard.onrender.com"
+    ]
+    
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=origins,
+        allow_credentials=True,
+        allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
+        allow_headers=["*"],
+        expose_headers=["Content-Disposition"],
+        max_age=86400,
+    )
 
 # Mount dashboard router
 app.include_router(dashboard_router, prefix="/api/dashboard")
@@ -321,6 +346,8 @@ async def health_check():
             "health_percentage": round(pct,1),
             "services": statuses,
             "data_consistency_status": "connected" if statuses["data_consistency"] else "disconnected",
+            "environment": "production" if IS_PRODUCTION else "development",
+            "cors_mode": "permissive" if IS_PRODUCTION else "restricted",
             "timestamp": time.time()
         }
 
@@ -335,9 +362,26 @@ async def root():
         "message": "Atticus Options Trading Platform API",
         "version": "2.3.1",
         "status": "operational",
+        "environment": "production" if IS_PRODUCTION else "development",
         "data_consistency": "enabled",
+        "cors_mode": "permissive" if IS_PRODUCTION else "restricted",
         "timestamp": time.time()
     }
+
+# CRITICAL FIX: CORS Testing Endpoint
+@app.options("/api/dashboard/{path:path}")
+async def cors_preflight(path: str):
+    """Handle CORS preflight requests explicitly"""
+    logger.info(f"CORS preflight request for: /api/dashboard/{path}")
+    return JSONResponse(
+        content={"message": "CORS preflight handled"},
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS, PATCH",
+            "Access-Control-Allow-Headers": "*",
+            "Access-Control-Max-Age": "86400"
+        }
+    )
 
 # NEW: Data consistency validation endpoint
 @app.get("/api/dashboard/validate-data-consistency")
@@ -362,6 +406,7 @@ async def validate_data_consistency():
             "trade_difference": trade_diff,
             "volume_difference": volume_diff,
             "audit_has_bot_reference": hasattr(audit_engine, 'bot_simulator') and audit_engine.bot_simulator is not None,
+            "environment": "production" if IS_PRODUCTION else "development",
             "timestamp": time.time()
         }
         
@@ -369,6 +414,83 @@ async def validate_data_consistency():
         logger.error(f"Error validating data consistency: {e}")
         return {"status": "error", "error": str(e), "timestamp": time.time()}
 
+# CRITICAL FIX: Force restart endpoint for Render
+@app.post("/api/dashboard/force-restart")
+async def force_restart():
+    """Force restart all background services - Render-specific fix"""
+    try:
+        logger.warning("🔄 FORCE RESTART INITIATED - Render ephemeral filesystem workaround")
+        
+        # Stop all services
+        if bot_trader_simulator:
+            bot_trader_simulator.stop()
+            logger.info("✅ Stopped bot trader simulator")
+            
+        if hedge_feed_manager:
+            hedge_feed_manager.stop()
+            logger.info("✅ Stopped hedge feed manager")
+            
+        # Wait for services to stop
+        await asyncio.sleep(2)
+        
+        # Clear all data manually
+        if bot_trader_simulator:
+            if hasattr(bot_trader_simulator, 'recent_trades_log'):
+                bot_trader_simulator.recent_trades_log.clear()
+            if hasattr(bot_trader_simulator, 'total_trades_executed'):
+                bot_trader_simulator.total_trades_executed = 0
+            if hasattr(bot_trader_simulator, 'total_premium_collected_usd'):
+                bot_trader_simulator.total_premium_collected_usd = 0.0
+            if hasattr(bot_trader_simulator, 'start_time'):
+                bot_trader_simulator.start_time = time.time()
+                
+        if hedge_feed_manager:
+            if hasattr(hedge_feed_manager, 'recent_hedges'):
+                hedge_feed_manager.recent_hedges.clear()
+                
+        if position_manager:
+            if hasattr(position_manager, 'positions'):
+                position_manager.positions.clear()
+            if hasattr(position_manager, 'total_portfolio_delta'):
+                position_manager.total_portfolio_delta = 0.0
+                
+        # Restart services
+        await asyncio.sleep(1)
+        
+        if bot_trader_simulator:
+            bot_trader_simulator.start()
+            logger.info("✅ Restarted bot trader simulator")
+            
+        if hedge_feed_manager:
+            hedge_feed_manager.start()
+            logger.info("✅ Restarted hedge feed manager")
+            
+        logger.warning("✅ FORCE RESTART COMPLETED - Services restarted with cleared data")
+        
+        return {
+            "status": "services_restarted", 
+            "message": "All services restarted with cleared data",
+            "environment": "production" if IS_PRODUCTION else "development",
+            "timestamp": time.time()
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Force restart failed: {e}")
+        return {"error": str(e), "status": "restart_failed", "timestamp": time.time()}
+
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("main_dashboard:app", host=config.API_HOST, port=config.API_PORT, reload=True)
+    
+    # Environment-specific configuration
+    uvicorn_config = {
+        "host": config.API_HOST,
+        "port": config.API_PORT,
+        "reload": not IS_PRODUCTION  # Disable reload in production
+    }
+    
+    if IS_PRODUCTION:
+        logger.info("🌐 Starting in PRODUCTION mode")
+    else:
+        logger.info("🔧 Starting in DEVELOPMENT mode with reload")
+        
+    uvicorn.run("main_dashboard:app", **uvicorn_config)
