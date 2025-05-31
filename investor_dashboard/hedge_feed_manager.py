@@ -17,7 +17,7 @@ class Exchange(Enum):
     COINBASE_PRO = config.EXCHANGE_NAME_COINBASE_PRO
     KRAKEN = config.EXCHANGE_NAME_KRAKEN
     OKX = config.EXCHANGE_NAME_OKX
-    # REMOVED: DERIBIT = config.EXCHANGE_NAME_DERIBIT  # User prefers Coinbase Pro/Kraken
+    # REMOVED: DERIBIT = config.EXCHANGE_NAME_DERIBIT # User prefers Coinbase Pro/Kraken
     SIMULATED = "Simulated Internal"
 
 @dataclass
@@ -64,12 +64,18 @@ class HedgeFeedManager:
 
         # CRITICAL: Liquidity-based hedge limits
         self.min_liquidity_buffer_pct = 0.20  # Keep 20% buffer
-        self.max_liquidity_per_hedge_pct = 0.05  # REDUCED: Max 5% of available per hedge
+        self.max_liquidity_per_hedge_pct = 0.03  # FURTHER REDUCED: Max 3% of available per hedge
         
-        # CRITICAL FIX: Hedge sizing parameters
-        self.hedge_coverage_ratio = 0.8  # Hedge 80% of delta exposure
-        self.min_hedge_size_btc = 0.005  # Minimum 0.005 BTC ($500 at $100K)
-        self.max_single_hedge_btc = 0.1  # REDUCED: Maximum 0.1 BTC per hedge
+        # CRITICAL FIX: Hedge sizing parameters - TIGHTEN TO 50%
+        self.hedge_coverage_ratio = 0.5  # REDUCED: From 0.8 to 0.5 (50% coverage for tighter hedging)
+        self.min_hedge_size_btc = 0.008  # Slightly increased minimum to 0.008 BTC ($800 at $100K)
+        self.max_single_hedge_btc = 0.08  # REDUCED: Maximum 0.08 BTC per hedge
+
+        logger.info(f"HFM: Initialized with tight hedging parameters:")
+        logger.info(f"  ├─ Coverage Ratio: {self.hedge_coverage_ratio:.1%} (50% of delta)")
+        logger.info(f"  ├─ Min Hedge Size: {self.min_hedge_size_btc:.3f} BTC")
+        logger.info(f"  ├─ Max Hedge Size: {self.max_single_hedge_btc:.3f} BTC")
+        logger.info(f"  └─ Max Liquidity Per Hedge: {self.max_liquidity_per_hedge_pct:.1%}")
 
     def reset_hedge_metrics(self):
         """CRITICAL FIX: Reset all hedge metrics for complete system reset"""
@@ -180,18 +186,64 @@ class HedgeFeedManager:
             # Emergency fallback
             return 10.0  # 10 BTC fallback limit
 
+    def _calculate_hedge_pnl(self) -> float:
+        """CRITICAL FIX: Calculate current unrealized P&L from open hedge positions"""
+        try:
+            if not self.recent_hedges:
+                return 0.0
+                
+            current_price = self.position_manager.current_btc_price
+            if current_price <= 0:
+                logger.warning("HFM: Invalid current BTC price for P&L calculation")
+                return 0.0
+                
+            total_pnl = 0.0
+            cutoff = time.time() - 24*3600  # 24h window
+            
+            logger.debug(f"HFM: Calculating P&L with current BTC price: ${current_price:,.2f}")
+            
+            for hedge in self.recent_hedges:
+                if hedge.timestamp < cutoff:
+                    continue
+                    
+                quantity = hedge.quantity_btc
+                entry_price = hedge.price_usd
+                
+                # P&L calculation based on hedge direction
+                # Short hedge (delta_impact < 0): profit when price falls (entry > current)
+                # Long hedge (delta_impact > 0): profit when price rises (current > entry)
+                if hedge.delta_impact < 0:  # Short hedge
+                    pnl = quantity * (entry_price - current_price)
+                    hedge_type = "SHORT"
+                else:  # Long hedge
+                    pnl = quantity * (current_price - entry_price)
+                    hedge_type = "LONG"
+                    
+                total_pnl += pnl
+                
+                logger.debug(f"HFM: {hedge_type} hedge {hedge.hedge_id}: "
+                           f"{quantity:.4f} BTC @ ${entry_price:,.2f} → "
+                           f"P&L: ${pnl:+,.2f}")
+                
+            logger.debug(f"HFM: Total hedge P&L (24h): ${total_pnl:+,.2f}")
+            return total_pnl
+            
+        except Exception as e:
+            logger.error(f"HFM: Error calculating hedge P&L: {e}")
+            return 0.0
+
     def _execute_hedge(self, net_delta: float):
-        """CRITICAL FIX: Execute hedge with PROPORTIONAL sizing based on actual delta exposure"""
+        """CRITICAL FIX: Execute hedge with TIGHTER proportional sizing (50% coverage)"""
         # CORRECT: If net_delta > 0 (long), we sell to offset. If net_delta < 0 (short), we buy to offset.
         direction = "sell" if net_delta > 0 else "buy"
 
-        # CRITICAL FIX: Proportional hedge sizing based on actual delta exposure
+        # CRITICAL FIX: TIGHTER proportional hedge sizing (50% coverage)
         abs_delta = abs(net_delta)
         
-        # Calculate proportional hedge size (hedge a percentage of the delta exposure)
+        # Calculate proportional hedge size with REDUCED coverage
         proportional_hedge_size = abs_delta * self.hedge_coverage_ratio
         
-        logger.info(f"HFM: PROPORTIONAL SIZING - Delta: {abs_delta:.4f} BTC, Coverage: {self.hedge_coverage_ratio:.1%}, Target: {proportional_hedge_size:.4f} BTC")
+        logger.info(f"HFM: TIGHT PROPORTIONAL SIZING - Delta: {abs_delta:.4f} BTC, Coverage: {self.hedge_coverage_ratio:.1%}, Target: {proportional_hedge_size:.4f} BTC")
 
         # CRITICAL: Check minimum hedge size (don't hedge tiny amounts)
         if proportional_hedge_size < self.min_hedge_size_btc:
@@ -340,7 +392,7 @@ class HedgeFeedManager:
         return sorted(self.recent_hedges, key=lambda h: h.timestamp, reverse=True)[:limit]
 
     def get_hedge_metrics(self) -> Dict[str, Any]:
-        """FIXED: Calculate hedge metrics using both recent hedges and accumulated data"""
+        """FIXED: Calculate hedge metrics with PROPER P&L calculation"""
         try:
             now = time.time()
             cutoff = now - 24*3600
@@ -367,23 +419,29 @@ class HedgeFeedManager:
             # Calculate liquidity metrics
             available_liquidity = self._get_available_liquidity_btc()
             
-            # CRITICAL FIX: Estimate P&L for hedge metrics
-            hedge_pnl_24h = self.hedge_pnl_accumulator
+            # CRITICAL FIX: Calculate REAL hedge P&L using unrealized positions
+            hedge_pnl_24h = self._calculate_hedge_pnl()
 
             # ENHANCED: Add hedge efficiency metrics
             total_delta_hedged = sum(abs(record.get("original_delta", 0)) for record in self.hedge_history[-hedges_count_24h:])
             hedge_efficiency = (total_volume_btc / max(total_delta_hedged, 0.001)) * 100 if total_delta_hedged > 0 else 0
+
+            # ENHANCED: Calculate hedge effectiveness
+            hedge_effectiveness = self.hedge_coverage_ratio * 100  # Shows actual coverage %
 
             return {
                 "hedges_24h": hedges_count_24h,
                 "total_volume_hedged_btc_24h": round(total_volume_btc, 4),
                 "total_hedge_value_usd_24h": round(total_value_usd, 2),
                 "avg_execution_time_ms": round(avg_exec_time, 2),
-                "hedge_pnl_24h": round(hedge_pnl_24h, 2),
+                "hedge_pnl_24h": round(hedge_pnl_24h, 2),  # ✅ FIXED: Now shows real P&L
                 "available_liquidity_btc": round(available_liquidity, 4),
                 "liquidity_utilization_pct": round((total_volume_btc / max(available_liquidity, 0.1)) * 100, 2),
                 "hedge_efficiency_pct": round(hedge_efficiency, 1),  # NEW: Hedge efficiency metric
+                "hedge_effectiveness_pct": round(hedge_effectiveness, 1),  # NEW: Coverage effectiveness
                 "avg_hedge_size_btc": round(total_volume_btc / max(hedges_count_24h, 1), 4),  # NEW: Average hedge size
+                "coverage_ratio": round(self.hedge_coverage_ratio * 100, 1),  # NEW: Show coverage %
+                "unrealized_pnl_per_btc": round(hedge_pnl_24h / max(total_volume_btc, 0.001), 2),  # NEW: P&L per BTC
                 "timestamp": now
             }
             
@@ -398,7 +456,10 @@ class HedgeFeedManager:
                 "available_liquidity_btc": 0.0,
                 "liquidity_utilization_pct": 0.0,
                 "hedge_efficiency_pct": 0.0,
+                "hedge_effectiveness_pct": 0.0,
                 "avg_hedge_size_btc": 0.0,
+                "coverage_ratio": 50.0,
+                "unrealized_pnl_per_btc": 0.0,
                 "error": str(e),
                 "timestamp": time.time()
             }
@@ -468,11 +529,12 @@ class HedgeFeedManager:
             "hedge_coverage_ratio": self.hedge_coverage_ratio,
             "min_hedge_size_btc": self.min_hedge_size_btc,
             "max_single_hedge_btc": self.max_single_hedge_btc,
+            "current_pnl": self._calculate_hedge_pnl(),  # NEW: Current P&L
             "timestamp": time.time()
         }
 
     def get_24h_hedge_summary(self) -> Dict[str, Any]:
-        """CRITICAL FIX: Get 24h hedge summary using accumulated data"""
+        """CRITICAL FIX: Get 24h hedge summary with proper P&L"""
         try:
             metrics = self.get_hedge_metrics()
             
@@ -480,11 +542,14 @@ class HedgeFeedManager:
                 "total_hedges": metrics["hedges_24h"],
                 "total_volume_btc": metrics["total_volume_hedged_btc_24h"],
                 "total_value_usd": metrics["total_hedge_value_usd_24h"],
-                "hedge_pnl": metrics["hedge_pnl_24h"],
+                "hedge_pnl": metrics["hedge_pnl_24h"],  # ✅ FIXED: Now shows real P&L
                 "avg_execution_time": metrics["avg_execution_time_ms"],
                 "liquidity_utilization": metrics["liquidity_utilization_pct"],
                 "hedge_efficiency": metrics.get("hedge_efficiency_pct", 0),
+                "hedge_effectiveness": metrics.get("hedge_effectiveness_pct", 50),
                 "avg_hedge_size_btc": metrics.get("avg_hedge_size_btc", 0),
+                "coverage_ratio": metrics.get("coverage_ratio", 50),
+                "unrealized_pnl_per_btc": metrics.get("unrealized_pnl_per_btc", 0),
                 "uptime_hours": (time.time() - self.start_time) / 3600,
                 "timestamp": time.time()
             }
@@ -495,11 +560,14 @@ class HedgeFeedManager:
                 "total_hedges": 0,
                 "total_volume_btc": 0.0,
                 "total_value_usd": 0.0,
-                "hedge_pnl": 0.0,
+                "hedge_pnl": 0.0,  # ✅ FIXED: Now properly handles P&L
                 "avg_execution_time": 0.0,
                 "liquidity_utilization": 0.0,
                 "hedge_efficiency": 0.0,
+                "hedge_effectiveness": 50.0,
                 "avg_hedge_size_btc": 0.0,
+                "coverage_ratio": 50.0,
+                "unrealized_pnl_per_btc": 0.0,
                 "uptime_hours": 0.0,
                 "error": str(e),
                 "timestamp": time.time()
@@ -513,6 +581,7 @@ class HedgeFeedManager:
         current_greeks = self.position_manager.get_aggregate_platform_greeks()
         current_delta = current_greeks.get("net_portfolio_delta_btc", 0.0)
         liquidity_before = self.get_liquidity_status()
+        pnl_before = self._calculate_hedge_pnl()
 
         logger.warning(f"HFM: FORCING TEST HEDGE EXECUTION - Current delta: {current_delta:.4f}")
 
@@ -522,6 +591,7 @@ class HedgeFeedManager:
         # Get updated state after hedge
         updated_greeks = self.position_manager.get_aggregate_platform_greeks()
         liquidity_after = self.get_liquidity_status()
+        pnl_after = self._calculate_hedge_pnl()
 
         return {
             "test_executed": True,
@@ -531,7 +601,10 @@ class HedgeFeedManager:
             "hedges_count_after": updated_greeks.get("open_hedges_count", 0),
             "liquidity_before_btc": liquidity_before.get("available_liquidity_btc", 0),
             "liquidity_after_btc": liquidity_after.get("available_liquidity_btc", 0),
+            "pnl_before": round(pnl_before, 2),  # NEW: P&L tracking
+            "pnl_after": round(pnl_after, 2),   # NEW: P&L tracking
             "last_hedge_delta_impact": self.recent_hedges[-1].delta_impact if self.recent_hedges else 0.0,
+            "coverage_ratio": self.hedge_coverage_ratio * 100,  # NEW: Show coverage
             "timestamp": time.time()
         }
 
@@ -540,6 +613,8 @@ class HedgeFeedManager:
         logger.warning("HFM: CLEARING ALL HEDGE HISTORY")
 
         hedge_count = len(self.recent_hedges)
+        pnl_before_clear = self._calculate_hedge_pnl()
+        
         self.recent_hedges.clear()
 
         # Also clear position manager hedge positions if method exists
@@ -553,6 +628,7 @@ class HedgeFeedManager:
 
         return {
             "cleared_hedge_history": hedge_count,
+            "pnl_before_clear": round(pnl_before_clear, 2),  # NEW: P&L before clearing
             "metrics_reset": True,
             "timestamp": time.time()
         }
@@ -567,6 +643,7 @@ class HedgeFeedManager:
             "total_hedge_volume_btc": self.total_hedge_volume_btc,
             "total_hedge_volume_usd": self.total_hedge_volume_usd,
             "hedge_pnl_accumulator": self.hedge_pnl_accumulator,
+            "current_unrealized_pnl": round(self._calculate_hedge_pnl(), 2),  # NEW: Real-time P&L
             "daily_hedge_volume": self.daily_hedge_volume,
             "min_liquidity_buffer_pct": self.min_liquidity_buffer_pct,
             "max_liquidity_per_hedge_pct": self.max_liquidity_per_hedge_pct,
@@ -583,3 +660,59 @@ class HedgeFeedManager:
             "exchanges_enabled": [ex.value for ex in [Exchange.COINBASE_PRO, Exchange.KRAKEN]],
             "timestamp": time.time()
         }
+
+    def get_pnl_breakdown(self) -> Dict[str, Any]:
+        """NEW: Get detailed P&L breakdown for debugging"""
+        try:
+            current_price = self.position_manager.current_btc_price
+            cutoff = time.time() - 24*3600
+            
+            pnl_details = []
+            total_pnl = 0.0
+            
+            for hedge in self.recent_hedges:
+                if hedge.timestamp < cutoff:
+                    continue
+                    
+                quantity = hedge.quantity_btc
+                entry_price = hedge.price_usd
+                
+                if hedge.delta_impact < 0:  # Short hedge
+                    pnl = quantity * (entry_price - current_price)
+                    hedge_type = "SHORT"
+                else:  # Long hedge
+                    pnl = quantity * (current_price - entry_price)
+                    hedge_type = "LONG"
+                    
+                total_pnl += pnl
+                
+                pnl_details.append({
+                    "hedge_id": hedge.hedge_id,
+                    "type": hedge_type,
+                    "quantity_btc": round(quantity, 4),
+                    "entry_price": round(entry_price, 2),
+                    "current_price": round(current_price, 2),
+                    "price_change": round(current_price - entry_price, 2),
+                    "pnl_usd": round(pnl, 2),
+                    "pnl_per_btc": round(pnl / quantity, 2),
+                    "exchange": hedge.exchange.value,
+                    "age_hours": round((time.time() - hedge.timestamp) / 3600, 2)
+                })
+            
+            return {
+                "total_pnl_usd": round(total_pnl, 2),
+                "total_positions": len(pnl_details),
+                "pnl_breakdown": pnl_details,
+                "current_btc_price": round(current_price, 2),
+                "timestamp": time.time()
+            }
+            
+        except Exception as e:
+            logger.error(f"HFM: Error getting P&L breakdown: {e}")
+            return {
+                "total_pnl_usd": 0.0,
+                "total_positions": 0,
+                "pnl_breakdown": [],
+                "error": str(e),
+                "timestamp": time.time()
+            }
