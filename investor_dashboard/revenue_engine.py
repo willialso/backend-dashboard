@@ -25,6 +25,7 @@ class RevenueMetrics:
     gross_premium_per_contract: float
     volatility_used_for_pricing_pct: float
     calculation_method_used: str
+    
     # FIXED: Add fields that dashboard_api.py expects
     daily_revenue_usd: float = 0.0
     platform_markup_pct: float = 0.0
@@ -42,10 +43,12 @@ class RevenueEngine:
                  audit_engine_instance: Optional[Any] = None):
         
         logger.info("🔧 Initializing Revenue Engine with Advanced Engines & Dependencies...")
+        
         self.vol_engine = volatility_engine_instance
         self.pricing_engine = pricing_engine_instance
         self.position_manager = position_manager_instance
         self.audit_engine = audit_engine_instance
+        
         self.current_btc_price: float = 0.0
         self.base_markup_percentage: float = config.REVENUE_BASE_MARKUP_PERCENTAGE
         self.last_price_update_ts: float = 0.0
@@ -57,6 +60,22 @@ class RevenueEngine:
         self.total_trades_24h: int = 0
         self.last_24h_reset: float = time.time()
         
+        # CRITICAL FIX: Add all revenue tracking attributes that dashboard_api.py expects
+        self.daily_revenue_accumulator: float = 0.0
+        self.total_revenue_collected: float = 0.0
+        self.markup_revenue: float = 0.0
+        self.fee_revenue: float = 0.0
+        self.cumulative_revenue_usd: float = 0.0
+        self.daily_revenue_usd: float = 0.0
+        
+        # CRITICAL FIX: Add revenue tracking lists/dicts
+        self.revenue_records: List[Dict] = []
+        self.daily_metrics: Dict = {}
+        self.transaction_history: List[Dict] = []
+        
+        # CRITICAL FIX: Track start time for 24h calculations
+        self.start_time: float = time.time()
+        
         # CRITICAL: Log audit engine connection status
         if self.audit_engine is not None:
             logger.info(f"✅ Revenue Engine connected to audit engine: {type(self.audit_engine)}")
@@ -65,9 +84,45 @@ class RevenueEngine:
         
         logger.info("✅ Revenue Engine initialized.")
 
+    def reset_metrics(self):
+        """CRITICAL FIX: Reset all revenue metrics to zero for complete system reset"""
+        try:
+            logger.warning("RE: Resetting all revenue metrics to zero")
+            
+            # Reset 24h tracking
+            self.total_premium_volume_24h = 0.0
+            self.total_trades_24h = 0
+            self.last_24h_reset = time.time()
+            
+            # CRITICAL: Reset all revenue tracking attributes
+            self.daily_revenue_accumulator = 0.0
+            self.total_revenue_collected = 0.0
+            self.markup_revenue = 0.0
+            self.fee_revenue = 0.0
+            self.cumulative_revenue_usd = 0.0
+            self.daily_revenue_usd = 0.0
+            
+            # Clear all revenue tracking collections
+            self.revenue_records.clear()
+            self.daily_metrics.clear()
+            self.transaction_history.clear()
+            
+            # Reset start time for fresh 24h window
+            self.start_time = time.time()
+            
+            # Reset price tracking
+            self.price_update_count = 0
+            self.last_price_update_ts = 0.0
+            
+            logger.info("✅ RE: All revenue metrics reset to zero")
+            
+        except Exception as e:
+            logger.error(f"❌ RE: Error resetting metrics: {e}")
+
     def update_price(self, btc_price: float):
-        if btc_price <= 0: 
+        if btc_price <= 0:
             return
+        
         self.current_btc_price = btc_price
         self.last_price_update_ts = time.time()
         self.price_update_count += 1
@@ -84,16 +139,16 @@ class RevenueEngine:
             self.last_24h_reset = now
 
     def price_option_for_platform_sale(self,
-                                       strike_price: float,
-                                       expiry_minutes: int,
-                                       option_type: str = 'call',
-                                       quantity: float = 1.0,
-                                       trade_id_prefix: str = "opt") -> Optional[Dict]:
+                                     strike_price: float,
+                                     expiry_minutes: int,
+                                     option_type: str = 'call',
+                                     quantity: float = 1.0,
+                                     trade_id_prefix: str = "opt") -> Optional[Dict]:
         
         if self.current_btc_price <= 0:
             logger.error("❌ RE: No valid BTC price for option pricing.")
             return None
-            
+
         if not self.pricing_engine:
             logger.error("❌ RE: AdvancedPricingEngine not available.")
             return None
@@ -142,6 +197,29 @@ class RevenueEngine:
         self._reset_24h_metrics_if_needed()
         self.total_premium_volume_24h += total_premium
         self.total_trades_24h += 1
+        
+        # CRITICAL FIX: Update revenue accumulators
+        revenue_amount = revenue_captured_per_unit * quantity
+        self.daily_revenue_accumulator += revenue_amount
+        self.total_revenue_collected += revenue_amount
+        self.markup_revenue += revenue_amount
+        self.cumulative_revenue_usd += revenue_amount
+        self.daily_revenue_usd += revenue_amount
+        
+        # CRITICAL FIX: Record transaction in revenue tracking
+        transaction_record = {
+            "trade_id": trade_id_full,
+            "timestamp": current_timestamp,
+            "premium_total": total_premium,
+            "revenue_captured": revenue_amount,
+            "markup_pct": self.base_markup_percentage * 100
+        }
+        self.revenue_records.append(transaction_record)
+        self.transaction_history.append(transaction_record)
+        
+        # Keep transaction history manageable
+        if len(self.transaction_history) > 1000:
+            self.transaction_history = self.transaction_history[-1000:]
 
         # Prepare trade details for position manager
         trade_details_for_pm = {
@@ -174,25 +252,27 @@ class RevenueEngine:
                 if hasattr(self.audit_engine, 'track_option_premium'):
                     self.audit_engine.track_option_premium(
                         amount=total_premium,
-                        trade_id=trade_id_full, 
+                        trade_id=trade_id_full,
                         is_credit=True
                     )
                     logger.info(f"RE: ✅ Successfully tracked premium ${total_premium:.2f} in audit engine")
                 else:
                     logger.error("RE: ❌ audit_engine missing track_option_premium method")
-                    
+
                 if hasattr(self.audit_engine, 'track_option_trade_executed'):
                     self.audit_engine.track_option_trade_executed(trade_id=trade_id_full)
                     logger.info(f"RE: ✅ Successfully tracked trade execution {trade_id_full} in audit engine")
                 else:
                     logger.error("RE: ❌ audit_engine missing track_option_trade_executed method")
-                    
+
             except Exception as e:
                 logger.error(f"RE: ❌ Audit engine registration failed: {e}", exc_info=True)
         else:
             logger.error(f"RE: ❌ audit_engine is None! Cannot track trade {trade_id_full}")
 
-        logger.info(f"💰 RE Sold: {trade_id_full} ({option_type.upper()} K{strike_price} Qty{quantity}). FairVal/u=${fair_value_per_unit:.2f}, PlatPrice/u=${platform_price_per_unit:.2f}, Sigma={sigma_for_pricing:.4f}, InitialOptionDelta/u={greeks_per_unit.get('delta', 0):.4f}")
+        logger.info(f"💰 RE Sold: {trade_id_full} ({option_type.upper()} K{strike_price} Qty{quantity}). "
+                   f"FairVal/u=${fair_value_per_unit:.2f}, PlatPrice/u=${platform_price_per_unit:.2f}, "
+                   f"Sigma={sigma_for_pricing:.4f}, InitialOptionDelta/u={greeks_per_unit.get('delta', 0):.4f}")
 
         # FIXED: Return comprehensive data with all expected fields
         return {
@@ -272,13 +352,13 @@ class RevenueEngine:
             except Exception as e:
                 logger.warning(f"RE: BS calculation failed for metrics: {e}")
                 fair_value_per_unit = 100.0  # Fallback
-                
+
             platform_price_per_unit = fair_value_per_unit * (1 + self.base_markup_percentage)
             revenue_captured_per_unit = platform_price_per_unit - fair_value_per_unit
 
-            # Calculate daily revenue from actual trading activity
-            daily_revenue_estimate = self.total_premium_volume_24h * (self.base_markup_percentage / (1 + self.base_markup_percentage))
-            
+            # CRITICAL FIX: Calculate daily revenue from actual accumulated data
+            daily_revenue_estimate = self.daily_revenue_accumulator
+
             # Use actual trade count or estimated
             contracts_sold_24h = max(self.total_trades_24h, config.ESTIMATED_DAILY_CONTRACTS_SOLD)
 
@@ -297,7 +377,8 @@ class RevenueEngine:
             )
 
             if self.debug_mode:
-                logger.debug(f"💰 RE Metrics: PlatPrice/u=${metrics.platform_price_per_contract:.2f}, DailyRev=${metrics.daily_revenue_usd:.2f}, Vol24h=${self.total_premium_volume_24h:.2f}")
+                logger.debug(f"💰 RE Metrics: PlatPrice/u=${metrics.platform_price_per_contract:.2f}, "
+                           f"DailyRev=${metrics.daily_revenue_usd:.2f}, Vol24h=${self.total_premium_volume_24h:.2f}")
 
             return metrics
 
@@ -323,7 +404,7 @@ class RevenueEngine:
             vol_metrics = self.vol_engine.get_volatility_metrics()
         except Exception as e:
             vol_metrics = f"Error: {e}"
-            
+
         return {
             "current_btc_price": self.current_btc_price,
             "last_price_update_ts": self.last_price_update_ts,
@@ -332,38 +413,40 @@ class RevenueEngine:
             "base_markup_percentage": self.base_markup_percentage,
             "total_premium_volume_24h": self.total_premium_volume_24h,
             "total_trades_24h": self.total_trades_24h,
+            "daily_revenue_accumulator": self.daily_revenue_accumulator,
+            "total_revenue_collected": self.total_revenue_collected,
             "audit_engine_connected": self.audit_engine is not None,
             "audit_engine_type": type(self.audit_engine).__name__ if self.audit_engine else "None",
             "pricing_engine_type": type(self.pricing_engine).__name__ if self.pricing_engine else "None",
             "volatility_engine_metrics": vol_metrics.__dict__ if hasattr(vol_metrics, '__dict__') else str(vol_metrics),
-            "debug_mode_active": self.debug_mode
+            "debug_mode_active": self.debug_mode,
+            "revenue_records_count": len(self.revenue_records),
+            "transaction_history_count": len(self.transaction_history)
         }
 
     def test_volatility_engine(self, test_price: Optional[float] = None) -> Dict:
         """Test volatility engine functionality"""
         effective_test_price = test_price if test_price is not None else (self.current_btc_price if self.current_btc_price > 0 else 108000.0)
-        
         logger.info(f"🧪 RE: Testing Volatility Engine with BTC price: ${effective_test_price:,.2f}")
-        
+
         try:
             self.vol_engine.update_price(effective_test_price)
-            
             results = {
                 "test_price": effective_test_price,
                 "simple_historical_vol": self.vol_engine.calculate_simple_historical_vol() * 100,
                 "ewma_volatility": self.vol_engine.calculate_ewma_volatility() * 100,
                 "regime": str(self.vol_engine.detect_volatility_regime()),
             }
-            
+
             atm_strike = round(effective_test_price / config.STRIKE_ROUNDING_NEAREST) * config.STRIKE_ROUNDING_NEAREST
             results["expiry_adjusted_60m_atm_vol_pct"] = self.vol_engine.get_expiry_adjusted_volatility(60, atm_strike, effective_test_price) * 100
-            
+
             full_metrics_obj = self.vol_engine.get_volatility_metrics()
             results["full_metrics"] = full_metrics_obj.__dict__ if hasattr(full_metrics_obj, '__dict__') else str(full_metrics_obj)
-            
+
             logger.info(f"🧪 RE: Volatility Test Results: {results}")
             return results
-            
+
         except Exception as e:
             logger.error(f"RE: Volatility test failed: {e}")
             return {"error": str(e), "test_price": effective_test_price}
@@ -371,7 +454,6 @@ class RevenueEngine:
     def force_price_update(self, btc_price: float) -> Dict:
         """Force update BTC price and return current metrics"""
         logger.info(f"🔧 RE: Force updating with BTC price: ${btc_price:,.2f}")
-        
         self.update_price(btc_price)
         current_metrics = self.get_current_metrics()
         
@@ -383,10 +465,48 @@ class RevenueEngine:
 
     def toggle_debug_mode(self, enabled: Optional[bool] = None) -> Dict:
         """Toggle debug mode on/off"""
-        if enabled is None: 
+        if enabled is None:
             self.debug_mode = not self.debug_mode
-        else: 
+        else:
             self.debug_mode = enabled
-            
+        
         logger.info(f"🔧 RE: Debug mode: {'ENABLED' if self.debug_mode else 'DISABLED'}")
         return {"debug_mode_active": self.debug_mode}
+
+    def get_revenue_summary_24h(self) -> Dict:
+        """CRITICAL FIX: Get 24h revenue summary for dashboard"""
+        try:
+            cutoff_24h = time.time() - (24 * 3600)
+            
+            # Filter revenue records from last 24h
+            recent_records = [r for r in self.revenue_records if r.get("timestamp", 0) >= cutoff_24h]
+            
+            total_revenue_24h = sum(r.get("revenue_captured", 0) for r in recent_records)
+            total_premium_24h = sum(r.get("premium_total", 0) for r in recent_records)
+            trade_count_24h = len(recent_records)
+            
+            avg_revenue_per_trade = total_revenue_24h / max(trade_count_24h, 1)
+            avg_markup_pct = (total_revenue_24h / max(total_premium_24h, 1)) * 100 if total_premium_24h > 0 else 0
+            
+            return {
+                "daily_revenue_usd": total_revenue_24h,
+                "total_premium_volume_24h": total_premium_24h,
+                "trades_24h": trade_count_24h,
+                "avg_revenue_per_trade": avg_revenue_per_trade,
+                "avg_markup_pct": avg_markup_pct,
+                "platform_markup_pct": self.base_markup_percentage * 100,
+                "timestamp": time.time()
+            }
+            
+        except Exception as e:
+            logger.error(f"RE: Error getting revenue summary: {e}")
+            return {
+                "daily_revenue_usd": 0.0,
+                "total_premium_volume_24h": 0.0,
+                "trades_24h": 0,
+                "avg_revenue_per_trade": 0.0,
+                "avg_markup_pct": 0.0,
+                "platform_markup_pct": self.base_markup_percentage * 100,
+                "error": str(e),
+                "timestamp": time.time()
+            }

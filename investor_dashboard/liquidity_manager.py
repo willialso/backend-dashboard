@@ -5,7 +5,6 @@ import logging
 import math
 from typing import Dict, Any, Optional
 from dataclasses import dataclass
-
 from backend import config
 
 logger = logging.getLogger(__name__)
@@ -70,6 +69,38 @@ class LiquidityManager:
         
         logger.info(f"✅ Liquidity Manager initialized: ${initial_total_pool_usd:,.0f} pool, "
                    f"{initial_active_users} users, {self.current_allocation.liquidity_percentage:.1f}% liquidity allocation")
+
+    def reset_to_defaults(self):
+        """CRITICAL FIX: Reset liquidity manager to defaults for complete system reset"""
+        try:
+            logger.warning("LM: Resetting to defaults")
+            
+            # Clear transaction histories
+            self.recent_transactions.clear()
+            self.hedge_transactions.clear()
+            logger.info("✅ LM: Cleared transaction histories")
+            
+            # Reset to initial state
+            self.current_allocation.liquidity_percentage = 75.0
+            self.current_allocation.operations_percentage = 25.0
+            self.current_allocation.utilized_amount_usd = 0.0
+            self.current_allocation.available_amount_usd = self.current_allocation.total_pool_usd * 0.75
+            self.current_allocation.utilization_ratio = 1.0
+            self.current_allocation.stress_test_status = "PASS"
+            self.current_allocation.last_updated = time.time()
+            
+            # Reset user count to initial
+            self.active_users = 50  # Reset to default
+            
+            # Force recalculation
+            self._recalculate_utilization()
+            
+            logger.info("✅ LM: Reset to defaults completed")
+            return {"status": "success", "message": "Liquidity manager reset to defaults"}
+            
+        except Exception as e:
+            logger.error(f"❌ LM: Error resetting to defaults: {e}")
+            return {"status": "error", "message": str(e)}
 
     def update_total_pool(self, new_total_pool_usd: float, reason: str = "manual_adjustment") -> Dict[str, Any]:
         """CRITICAL: Update total liquidity pool size for scaling"""
@@ -140,7 +171,7 @@ class LiquidityManager:
             if self.active_users <= 50:
                 recommended_per_trader = 30000  # $30K per trader
             elif self.active_users <= 100:
-                recommended_per_trader = 25000  # $25K per trader  
+                recommended_per_trader = 25000  # $25K per trader
             elif self.active_users <= 200:
                 recommended_per_trader = 20000  # $20K per trader
             elif self.active_users <= 350:
@@ -224,7 +255,7 @@ class LiquidityManager:
             
             # Update pool size
             result = self.update_total_pool(
-                target_pool_size, 
+                target_pool_size,
                 f"auto_scaling_for_{target_traders}_traders"
             )
             
@@ -232,7 +263,7 @@ class LiquidityManager:
                 result["target_traders"] = target_traders
                 result["optimal_per_trader"] = optimal_per_trader
                 result["buffer_applied"] = "20%"
-                
+            
             return result
             
         except Exception as e:
@@ -245,10 +276,10 @@ class LiquidityManager:
             # Validate percentages
             if abs(liquidity_pct + operations_pct - 100.0) > 0.1:
                 return {"error": "Percentages must sum to 100%", "success": False}
-                
+            
             if liquidity_pct < 50.0 or liquidity_pct > 95.0:
                 return {"error": "Liquidity percentage must be between 50% and 95%", "success": False}
-
+            
             # Update allocation
             old_liquidity_pct = self.current_allocation.liquidity_percentage
             self.current_allocation.liquidity_percentage = liquidity_pct
@@ -302,6 +333,7 @@ class LiquidityManager:
             
             # Calculate available based on allocation
             liquidity_allocated = self.current_allocation.total_pool_usd * (self.current_allocation.liquidity_percentage / 100.0)
+            
             self.current_allocation.available_amount_usd = liquidity_allocated - total_utilized
             self.current_allocation.utilized_amount_usd = total_utilized
             
@@ -310,14 +342,14 @@ class LiquidityManager:
                 self.current_allocation.utilization_ratio = 1.0 + (total_utilized / self.current_allocation.total_pool_usd)
             else:
                 self.current_allocation.utilization_ratio = 1.0
-                
+            
             # Update stress test status
             utilization_pct = (total_utilized / liquidity_allocated) * 100 if liquidity_allocated > 0 else 0
             self.current_allocation.stress_test_status = "FAIL" if utilization_pct >= (100 - self.stress_test_buffer_pct) else "PASS"
             
             logger.debug(f"LM: Recalculated - Utilized: ${total_utilized:,.0f}, Available: ${self.current_allocation.available_amount_usd:,.0f}, "
                         f"Ratio: {self.current_allocation.utilization_ratio:.3f}, Stress: {self.current_allocation.stress_test_status}")
-                        
+            
         except Exception as e:
             logger.error(f"LM: Error recalculating utilization: {e}")
 
@@ -329,7 +361,7 @@ class LiquidityManager:
             cutoff_24h = current_time - (24 * 3600)
             
             recent_volume = sum(
-                t.get("amount_usd", 0) for t in self.recent_transactions 
+                t.get("amount_usd", 0) for t in self.recent_transactions
                 if t.get("timestamp", 0) >= cutoff_24h
             )
             
@@ -367,7 +399,7 @@ class LiquidityManager:
             # Keep only last 1000 transactions
             if len(self.recent_transactions) > 1000:
                 self.recent_transactions = self.recent_transactions[-1000:]
-                
+            
             # Recalculate utilization after transaction
             self._recalculate_utilization()
             
@@ -391,7 +423,7 @@ class LiquidityManager:
             # Keep only last 500 hedge transactions
             if len(self.hedge_transactions) > 500:
                 self.hedge_transactions = self.hedge_transactions[-500:]
-                
+            
             # Record as regular transaction for utilization calculation
             self.record_transaction(amount_usd, transaction_type, hedge_id)
             
@@ -421,8 +453,8 @@ class LiquidityManager:
             "liquidity_ratio": self.current_allocation.utilization_ratio,
             "utilized_amount_usd": self.current_allocation.utilized_amount_usd,
             "available_amount_usd": self.current_allocation.available_amount_usd,
-            "utilization_pct": (self.current_allocation.utilized_amount_usd / 
-                               (self.current_allocation.total_pool_usd * self.current_allocation.liquidity_percentage / 100)) * 100,
+            "utilization_pct": (self.current_allocation.utilized_amount_usd /
+                              (self.current_allocation.total_pool_usd * self.current_allocation.liquidity_percentage / 100)) * 100,
             "stress_test_status": self.current_allocation.stress_test_status,
             "active_users": self.active_users,
             "last_updated": self.current_allocation.last_updated,
@@ -432,7 +464,7 @@ class LiquidityManager:
     def get_recommended_allocation(self) -> Dict[str, Any]:
         """Get recommended allocation based on current usage patterns"""
         try:
-            current_utilization_pct = (self.current_allocation.utilized_amount_usd / 
+            current_utilization_pct = (self.current_allocation.utilized_amount_usd /
                                      (self.current_allocation.total_pool_usd * self.current_allocation.liquidity_percentage / 100)) * 100
             
             # Recommend allocation based on utilization
@@ -444,7 +476,7 @@ class LiquidityManager:
                 recommended_liquidity = max(50, self.current_allocation.liquidity_percentage - 5)
             else:
                 recommended_liquidity = self.current_allocation.liquidity_percentage
-                
+            
             recommended_operations = 100 - recommended_liquidity
             
             # Calculate impact of recommendation
@@ -453,7 +485,7 @@ class LiquidityManager:
                 impact = "increase liquidity allocation"
             elif recommended_liquidity < self.current_allocation.liquidity_percentage:
                 impact = "decrease liquidity allocation"
-                
+            
             return {
                 "current_liquidity_pct": self.current_allocation.liquidity_percentage,
                 "current_operations_pct": self.current_allocation.operations_percentage,
@@ -478,6 +510,7 @@ class LiquidityManager:
             
             # Determine health status
             utilization_pct = allocation["utilization_pct"]
+            
             if utilization_pct > 95:
                 health_status = "CRITICAL"
             elif utilization_pct > 85:
@@ -488,7 +521,7 @@ class LiquidityManager:
                 health_status = "UNDERUTILIZED"
             else:
                 health_status = "HEALTHY"
-                
+            
             return {
                 "health_status": health_status,
                 "utilization_percentage": utilization_pct,
@@ -496,9 +529,9 @@ class LiquidityManager:
                 "allocation": allocation,
                 "recommendation": recommendation,
                 "pool_recommendation": pool_recommendation,
-                "recent_transactions_24h": len([t for t in self.recent_transactions 
+                "recent_transactions_24h": len([t for t in self.recent_transactions
                                               if t.get("timestamp", 0) >= time.time() - 86400]),
-                "hedge_transactions_24h": len([h for h in self.hedge_transactions 
+                "hedge_transactions_24h": len([h for h in self.hedge_transactions
                                              if h.get("timestamp", 0) >= time.time() - 86400]),
                 "timestamp": time.time()
             }
@@ -537,7 +570,7 @@ class LiquidityManager:
                 hedge_capacity_improvement = ((recommended_hedge_capacity_btc / current_hedge_capacity_btc) - 1) * 100
             else:
                 hedge_capacity_improvement = 0.0
-                
+            
             # FIXED: Ensure all values are positive and realistic
             return {
                 "current_pool_size": total_pool_usd,
@@ -563,3 +596,40 @@ class LiquidityManager:
                 "hedge_capacity_improvement": 0.0,
                 "timestamp": time.time()
             }
+
+    def get_debug_info(self) -> Dict[str, Any]:
+        """Get debugging information about liquidity manager state"""
+        return {
+            "active_users": self.active_users,
+            "current_allocation": self.current_allocation.__dict__,
+            "recent_transactions_count": len(self.recent_transactions),
+            "hedge_transactions_count": len(self.hedge_transactions),
+            "min_pool_size_usd": self.min_pool_size_usd,
+            "max_pool_size_usd": self.max_pool_size_usd,
+            "base_liquidity_per_user": self.base_liquidity_per_user,
+            "volume_factor_per_user": self.volume_factor_per_user,
+            "options_exposure_factor": self.options_exposure_factor,
+            "stress_test_buffer_pct": self.stress_test_buffer_pct,
+            "audit_engine_connected": self.audit_engine is not None,
+            "timestamp": time.time()
+        }
+
+    def clear_transaction_history(self) -> Dict[str, Any]:
+        """Clear all transaction history - for testing/debugging only"""
+        logger.warning("LM: CLEARING ALL TRANSACTION HISTORY")
+        
+        transaction_count = len(self.recent_transactions)
+        hedge_count = len(self.hedge_transactions)
+        
+        self.recent_transactions.clear()
+        self.hedge_transactions.clear()
+        
+        # Recalculate utilization with cleared history
+        self._recalculate_utilization()
+        
+        return {
+            "cleared_transactions": transaction_count,
+            "cleared_hedge_transactions": hedge_count,
+            "utilization_recalculated": True,
+            "timestamp": time.time()
+        }

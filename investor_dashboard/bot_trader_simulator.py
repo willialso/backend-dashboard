@@ -56,6 +56,7 @@ class BotTraderSimulator:
         audit_engine_instance: Optional[Any] = None
     ):
         logger.info("Initializing Bot Trader Simulator...")
+        
         self.revenue_engine = revenue_engine
         self.position_manager = position_manager
         self.audit_engine = audit_engine_instance
@@ -63,6 +64,23 @@ class BotTraderSimulator:
         self.current_btc_price = 0.0
         self.trade_id_counter = int(time.time() * 100)
         self.recent_trades_log: List[EnrichedTradeData] = []
+
+        # CRITICAL FIX: Initialize all volume and revenue tracking attributes
+        self.total_trades_executed = 0
+        self.total_premium_collected_usd = 0.0
+        self.daily_volume_usd = 0.0
+        self.daily_trade_count = 0
+        self.total_premium_volume_usd_24h = 0.0
+        self.avg_premium_received_usd_24h = 0.0
+        self.daily_revenue_usd = 0.0
+        self.cumulative_revenue = 0.0
+        self.total_volume_traded = 0.0
+        
+        # CRITICAL FIX: Initialize cached metrics and tracking
+        self.daily_metrics = {}
+        self._trading_stats_cache = None
+        self._cached_statistics = None
+        self.start_time = time.time()
 
         # 50% Advanced, 35% Intermediate, 15% Beginner
         total = config.BASE_TOTAL_SIMULATED_TRADERS
@@ -93,12 +111,69 @@ class BotTraderSimulator:
         if data_feed_manager and hasattr(data_feed_manager, 'add_price_callback'):
             data_feed_manager.add_price_callback(self.update_market_data)
 
+    def reset_to_defaults(self):
+        """CRITICAL FIX: Reset all trading data to defaults for complete system reset"""
+        try:
+            logger.warning("BTS: Resetting all trading data to defaults")
+            
+            # Clear trade log
+            self.recent_trades_log.clear()
+            logger.info("✅ BTS: Cleared recent_trades_log")
+            
+            # CRITICAL: Reset ALL volume and revenue counters
+            volume_revenue_attributes = [
+                'total_trades_executed',
+                'total_premium_collected_usd', 
+                'daily_volume_usd',
+                'daily_trade_count',
+                'total_premium_volume_usd_24h',
+                'avg_premium_received_usd_24h',
+                'daily_revenue_usd',
+                'cumulative_revenue',
+                'total_volume_traded'
+            ]
+            
+            for attr in volume_revenue_attributes:
+                if hasattr(self, attr):
+                    if 'usd' in attr.lower() or 'revenue' in attr.lower() or 'premium' in attr.lower():
+                        setattr(self, attr, 0.0)
+                    else:
+                        setattr(self, attr, 0)
+                    logger.debug(f"✅ BTS: Reset {attr} to 0")
+            
+            # Clear any cached metrics
+            for cache_attr in ['daily_metrics', '_trading_stats_cache', '_cached_statistics']:
+                if hasattr(self, cache_attr):
+                    val = getattr(self, cache_attr)
+                    if isinstance(val, dict):
+                        val.clear()
+                    elif isinstance(val, list):
+                        val.clear()
+                    else:
+                        setattr(self, cache_attr, None)
+                    logger.debug(f"✅ BTS: Cleared {cache_attr}")
+            
+            # Reset start time for fresh 24h window
+            self.start_time = time.time()
+            
+            # Reset trade ID counter
+            self.trade_id_counter = int(time.time() * 100)
+            
+            logger.info("✅ BTS: All trading data reset to defaults")
+            return {"status": "success", "message": "All trading data reset to defaults"}
+            
+        except Exception as e:
+            logger.error(f"❌ BTS: Error resetting to defaults: {e}")
+            return {"status": "error", "message": str(e)}
+
     def start(self):
         if self.is_running:
             return
+        
         self.is_running = True
         if self.current_btc_price <= 0:
             self.current_btc_price = 108000.0
+        
         threading.Thread(target=self._trading_loop, daemon=True).start()
         total_bots = sum(p["count"] for p in self.trader_profiles.values())
         logger.info(f"BTS: Started with {total_bots} virtual traders")
@@ -129,24 +204,25 @@ class BotTraderSimulator:
                     current_count = profile["count"]
                     if current_count <= 0:
                         continue
-                        
+
                     n_trades = self._calculate_trades_for_interval(profile)
                     
                     # Log trade generation for debugging
                     if n_trades > 0:
                         logger.info(f"BTS: Generating {n_trades} trades for {trader_type.value} ({current_count} traders)")
-                    
+
                     for _ in range(n_trades):
                         if not self.is_running:
                             break
                         self._generate_and_record_trade(trader_type, profile)
                         time.sleep(random.uniform(0.05, 0.2))
-                        
+
                 # Log total traders for debugging
                 if current_total != config.BASE_TOTAL_SIMULATED_TRADERS:
                     logger.info(f"BTS: Operating with {current_total} total traders (scaled from {config.BASE_TOTAL_SIMULATED_TRADERS})")
-                    
+
                 time.sleep(interval)
+
         except Exception as e:
             logger.error(f"BTS loop error: {e}", exc_info=True)
             self.is_running = False
@@ -172,11 +248,11 @@ class BotTraderSimulator:
             variance = max(0.1, expected_trades * 0.1)  # 10% variance
             actual_trades = max(0, int(random.normalvariate(expected_trades, math.sqrt(variance))))
             
-        # Debug logging for scaling verification
-        if current_bots != config.BASE_TOTAL_SIMULATED_TRADERS // 3:  # Detect when scaled
-            logger.debug(f"BTS: {current_bots} bots → {actual_trades} trades this interval")
+            # Debug logging for scaling verification
+            if current_bots != config.BASE_TOTAL_SIMULATED_TRADERS // 3:  # Detect when scaled
+                logger.debug(f"BTS: {current_bots} bots → {actual_trades} trades this interval")
             
-        return actual_trades
+            return actual_trades
 
     def _generate_and_record_trade(self, trader_type: TraderType, profile: Dict) -> Optional[EnrichedTradeData]:
         try:
@@ -213,7 +289,7 @@ class BotTraderSimulator:
                         info = self.revenue_engine.calculate_option_price(
                             strike, expiry, opt_type
                         )
-                    
+
                     # Extract premium from various possible key names
                     premium = (
                         info.get("platform_price_per_contract", 0) or
@@ -227,7 +303,7 @@ class BotTraderSimulator:
                 except Exception as e:
                     logger.error(f"BTS: Revenue engine error: {e}")
                     info = {}
-            
+
             # Fallback pricing if revenue engine fails
             if premium == 0:
                 # Simple Black-Scholes approximation for demonstration
@@ -236,7 +312,7 @@ class BotTraderSimulator:
                 T = expiry / (365.25 * 24 * 60)  # Convert minutes to years
                 r = config.RISK_FREE_RATE
                 sigma = config.DEFAULT_VOLATILITY
-                
+
                 # Simplified option pricing
                 from math import sqrt, exp, log
                 try:
@@ -267,7 +343,7 @@ class BotTraderSimulator:
 
             self.trade_id_counter += 1
             tid = f"BT{self.trade_id_counter}"
-            
+
             trade = EnrichedTradeData(
                 trade_id=tid,
                 trader_type=trader_type,
@@ -291,6 +367,15 @@ class BotTraderSimulator:
                 trader_success_rate=profile["success_rate"],
                 platform_profit_usd=info.get("platform_profit", premium * markup/100)
             )
+
+            # CRITICAL FIX: Update volume and revenue tracking
+            self.total_trades_executed += 1
+            self.total_premium_collected_usd += premium
+            self.daily_volume_usd += premium
+            self.daily_trade_count += 1
+            self.total_premium_volume_usd_24h += premium
+            self.cumulative_revenue += info.get("platform_profit", premium * markup/100)
+            self.total_volume_traded += premium
 
             # Append to log
             self.recent_trades_log.append(trade)
@@ -340,51 +425,171 @@ class BotTraderSimulator:
         adv = int(total_traders * 0.50)
         inter = int(total_traders * 0.35)
         beg = total_traders - adv - inter
-        
+
         # Update the actual trader profiles used by the trading loop
         self.trader_profiles[TraderType.ADVANCED]["count"] = adv
         self.trader_profiles[TraderType.INTERMEDIATE]["count"] = inter
         self.trader_profiles[TraderType.BEGINNER]["count"] = beg
-        
+
         # Log the change for immediate verification
         logger.info(f"BTS: Distribution updated - Adv={adv}, Int={inter}, Beg={beg}, Total={total_traders}")
         logger.info(f"BTS: Expected trades/hour: {(adv*25 + inter*17 + beg*8):,}")
-        
+
         return {"advanced_count": adv, "intermediate_count": inter, "beginner_count": beg, "total_count": total_traders}
 
     def get_trading_statistics(self) -> Dict[str, Any]:
-        """FIXED: Calculate statistics from actual recent trades"""
-        cutoff = time.time() - 86400
-        trades = [t for t in self.recent_trades_log if t.timestamp >= cutoff]
-        
-        if not trades:
+        """FIXED: Calculate statistics from actual recent trades and accumulated data"""
+        try:
+            # Use 24-hour cutoff for recent trades
+            cutoff = time.time() - 86400
+            trades = [t for t in self.recent_trades_log if t.timestamp >= cutoff]
+
+            # CRITICAL FIX: Use accumulated data for accurate statistics
+            total_trades_24h = max(len(trades), self.total_trades_executed)
+            total_premium_volume = max(
+                sum(t.premium_usd for t in trades) if trades else 0,
+                self.total_premium_volume_usd_24h
+            )
+
+            if not trades and total_trades_24h == 0:
+                return {
+                    "total_trades_24h": 0,
+                    "total_premium_volume_usd_24h": 0.0,
+                    "avg_premium_received_usd_24h": 0.0,
+                    "call_put_ratio_24h": 0.0,
+                    "most_active_expiry_minutes_24h": 0,
+                    "current_btc_price": self.current_btc_price,
+                    "timestamp": time.time()
+                }
+
+            # Calculate ratios from recent trades
+            calls = sum(1 for t in trades if t.option_type == "call")
+            puts = sum(1 for t in trades if t.option_type == "put")
+            ratio = round(calls / puts, 2) if puts > 0 else calls
+
+            # Calculate averages
+            avg_prem = round(total_premium_volume / max(total_trades_24h, 1), 2)
+
+            # Find most active expiry
+            expiry_counts = defaultdict(int)
+            for t in trades:
+                expiry_counts[t.expiry_minutes] += 1
+            most_active = max(expiry_counts, key=expiry_counts.get) if expiry_counts else 0
+
+            # Log current statistics for debugging
+            current_total = sum(p["count"] for p in self.trader_profiles.values())
+            logger.debug(f"BTS Stats: {total_trades_24h} trades from {current_total} traders, ${total_premium_volume:,.2f} volume")
+
+            return {
+                "total_trades_24h": total_trades_24h,
+                "total_premium_volume_usd_24h": round(total_premium_volume, 2),
+                "avg_premium_received_usd_24h": avg_prem,
+                "call_put_ratio_24h": ratio,
+                "most_active_expiry_minutes_24h": most_active,
+                "current_btc_price": self.current_btc_price,
+                "timestamp": time.time()
+            }
+
+        except Exception as e:
+            logger.error(f"BTS: Error calculating trading statistics: {e}")
             return {
                 "total_trades_24h": 0,
-                "total_premium_volume_usd_24h": 0,
-                "avg_premium_received_usd_24h": 0,
-                "call_put_ratio_24h": 0,
-                "most_active_expiry_minutes_24h": 0
+                "total_premium_volume_usd_24h": 0.0,
+                "avg_premium_received_usd_24h": 0.0,
+                "call_put_ratio_24h": 0.0,
+                "most_active_expiry_minutes_24h": 0,
+                "current_btc_price": self.current_btc_price,
+                "error": str(e),
+                "timestamp": time.time()
+            }
+
+    def get_24h_summary(self) -> Dict[str, Any]:
+        """CRITICAL FIX: Get 24h summary using accumulated data"""
+        try:
+            stats = self.get_trading_statistics()
+            
+            return {
+                "total_trades": stats["total_trades_24h"],
+                "total_volume_usd": stats["total_premium_volume_usd_24h"],
+                "total_revenue_usd": self.cumulative_revenue,
+                "active_traders": sum(p["count"] for p in self.trader_profiles.values()),
+                "avg_trades_per_trader": stats["total_trades_24h"] / max(sum(p["count"] for p in self.trader_profiles.values()), 1),
+                "uptime_hours": (time.time() - self.start_time) / 3600,
+                "trades_per_hour": stats["total_trades_24h"] / max((time.time() - self.start_time) / 3600, 1),
+                "timestamp": time.time()
             }
             
-        calls = sum(1 for t in trades if t.option_type == "call")
-        puts = sum(1 for t in trades if t.option_type == "put")
-        ratio = round(calls / puts, 2) if puts else calls
-        total_prem = round(sum(t.premium_usd for t in trades), 2)
-        avg_prem = round(total_prem / len(trades), 2)
+        except Exception as e:
+            logger.error(f"BTS: Error getting 24h summary: {e}")
+            return {
+                "total_trades": 0,
+                "total_volume_usd": 0.0,
+                "total_revenue_usd": 0.0,
+                "active_traders": 0,
+                "avg_trades_per_trader": 0.0,
+                "uptime_hours": 0.0,
+                "trades_per_hour": 0.0,
+                "error": str(e),
+                "timestamp": time.time()
+            }
+
+    def get_debug_info(self) -> Dict[str, Any]:
+        """Get debugging information about the bot trader simulator state"""
+        return {
+            "is_running": self.is_running,
+            "current_btc_price": self.current_btc_price,
+            "trade_id_counter": self.trade_id_counter,
+            "total_trades_executed": self.total_trades_executed,
+            "total_premium_collected_usd": self.total_premium_collected_usd,
+            "daily_volume_usd": self.daily_volume_usd,
+            "recent_trades_count": len(self.recent_trades_log),
+            "trader_profiles": {t.value: p for t, p in self.trader_profiles.items()},
+            "revenue_engine_connected": self.revenue_engine is not None,
+            "position_manager_connected": self.position_manager is not None,
+            "audit_engine_connected": self.audit_engine is not None,
+            "uptime_seconds": time.time() - self.start_time,
+            "cache_status": {
+                "daily_metrics_keys": list(self.daily_metrics.keys()) if self.daily_metrics else [],
+                "trading_stats_cache": self._trading_stats_cache is not None,
+                "cached_statistics": self._cached_statistics is not None
+            },
+            "timestamp": time.time()
+        }
+
+    def force_trade_generation(self, count: int = 1) -> List[EnrichedTradeData]:
+        """Force generate trades for testing - CAUTION: Only for testing"""
+        logger.warning(f"BTS: FORCING {count} TEST TRADES")
         
-        expiry_counts = defaultdict(int)
-        for t in trades:
-            expiry_counts[t.expiry_minutes] += 1
-        most_active = max(expiry_counts, key=expiry_counts.get) if expiry_counts else 0
+        trades_generated = []
+        for _ in range(count):
+            # Use advanced trader profile for testing
+            trader_type = TraderType.ADVANCED
+            profile = self.trader_profiles[trader_type]
+            
+            trade = self._generate_and_record_trade(trader_type, profile)
+            if trade:
+                trades_generated.append(trade)
+                
+        logger.info(f"BTS: Generated {len(trades_generated)} test trades")
+        return trades_generated
+
+    def clear_all_trades(self) -> Dict[str, Any]:
+        """Clear all trade history - for testing/debugging only"""
+        logger.warning("BTS: CLEARING ALL TRADE HISTORY")
         
-        # Log current statistics for debugging
-        current_total = sum(p["count"] for p in self.trader_profiles.values())
-        logger.debug(f"BTS Stats: {len(trades)} trades from {current_total} traders, ${total_prem:,.2f} volume")
+        trade_count = len(self.recent_trades_log)
+        self.recent_trades_log.clear()
+        
+        # Reset counters
+        self.total_trades_executed = 0
+        self.total_premium_collected_usd = 0.0
+        self.daily_volume_usd = 0.0
+        self.daily_trade_count = 0
+        self.total_premium_volume_usd_24h = 0.0
+        self.cumulative_revenue = 0.0
         
         return {
-            "total_trades_24h": len(trades),
-            "total_premium_volume_usd_24h": total_prem,
-            "avg_premium_received_usd_24h": avg_prem,
-            "call_put_ratio_24h": ratio,
-            "most_active_expiry_minutes_24h": most_active
+            "cleared_trades": trade_count,
+            "counters_reset": True,
+            "timestamp": time.time()
         }
