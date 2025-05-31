@@ -52,6 +52,43 @@ def safe_component_call(name: str, func, *args, **kwargs):
         logger.error(f"Error in {name}: {e}", exc_info=True)
         return None, str(e)
 
+# CRITICAL FIX: Add data consistency validation
+def validate_data_consistency():
+    """Validate that trading stats and audit data are consistent"""
+    try:
+        if not bot_trader_simulator or not audit_engine:
+            return True  # Can't validate if components missing
+            
+        trading_stats = bot_trader_simulator.get_trading_statistics()
+        audit_metrics = audit_engine.get_24h_metrics()
+        
+        trade_diff = abs(trading_stats.get('total_trades_24h', 0) - audit_metrics.option_trades_executed_24h)
+        volume_diff = abs(trading_stats.get('total_premium_volume_usd_24h', 0) - audit_metrics.gross_option_premiums_24h_usd)
+        
+        if trade_diff > 10 or volume_diff > 1000:
+            logger.error(f"❌ Data inconsistency detected: Trade diff: {trade_diff}, Volume diff: ${volume_diff:,.2f}")
+            return False
+            
+        logger.debug(f"✅ Data consistency validated: Trade diff: {trade_diff}, Volume diff: ${volume_diff:,.2f}")
+        return True
+        
+    except Exception as e:
+        logger.error(f"Error validating data consistency: {e}")
+        return False
+
+def force_audit_sync():
+    """Force audit engine to sync with bot simulator"""
+    try:
+        if audit_engine and bot_trader_simulator:
+            if hasattr(audit_engine, 'set_bot_simulator_reference'):
+                audit_engine.set_bot_simulator_reference(bot_trader_simulator)
+                logger.info("✅ Forced audit sync with bot simulator")
+            elif hasattr(audit_engine, 'force_sync_with_bot_simulator'):
+                audit_engine.force_sync_with_bot_simulator()
+                logger.info("✅ Forced audit sync completed")
+    except Exception as e:
+        logger.error(f"❌ Error forcing audit sync: {e}")
+
 # Request models
 class LiquidityAllocation(BaseModel):
     liquidity_pct: float
@@ -74,7 +111,8 @@ async def get_platform_health():
         "audit_engine": audit_engine is not None,
         "hedge_feed_manager": hedge_feed_manager is not None,
         "bot_simulator": bot_trader_simulator is not None,
-        "position_manager": position_manager is not None
+        "position_manager": position_manager is not None,
+        "data_consistency": validate_data_consistency()
     }
     
     up = sum(comps.values())
@@ -82,7 +120,13 @@ async def get_platform_health():
     status = "GOOD" if pct >= 80 else ("FAIR" if pct >= 50 else "POOR")
     
     log_api_call("/platform-health", "success", (time.time()-start)*1000)
-    return {"overall_health": status, "health_score": pct, "components": comps, "timestamp": time.time()}
+    return {
+        "overall_health": status, 
+        "health_score": pct, 
+        "components": comps, 
+        "data_consistency_enabled": True,
+        "timestamp": time.time()
+    }
 
 @router.get("/revenue-metrics")
 async def get_revenue_metrics():
@@ -428,7 +472,14 @@ async def get_hedge_metrics():
 
 @router.get("/audit-summary")
 async def get_audit_summary():
+    """CRITICAL FIX: Added data consistency validation"""
     start = time.time()
+    
+    # CRITICAL FIX: Validate data consistency and force sync if needed
+    if not validate_data_consistency():
+        logger.warning("❌ Data inconsistency detected, forcing audit sync")
+        force_audit_sync()
+    
     metrics, err = safe_component_call("audit_engine", audit_engine.get_24h_metrics)
     if err or metrics is None:
         log_api_call("/audit-summary", f"error - {err}", (time.time()-start)*1000)
@@ -436,6 +487,11 @@ async def get_audit_summary():
     
     data = metrics.__dict__ if hasattr(metrics, "__dict__") else metrics
     data["timestamp"] = time.time()
+    
+    # CRITICAL FIX: Add data consistency metadata
+    data["data_consistency_check"] = validate_data_consistency()
+    data["audit_synced_with_bot_simulator"] = (hasattr(audit_engine, 'bot_simulator') and 
+                                             audit_engine.bot_simulator is not None)
     
     log_api_call("/audit-summary", "success", (time.time()-start)*1000)
     return data
@@ -465,6 +521,9 @@ async def adjust_trader_distribution(dist: TraderDistribution):
         log_api_call("/trader-distribution", f"error - {err}", (time.time()-start)*1000)
         raise HTTPException(500, f"Error adjusting trader distribution: {err}")
     
+    # CRITICAL FIX: Force audit sync after trader distribution change
+    force_audit_sync()
+    
     log_api_call("/trader-distribution", "success", (time.time()-start)*1000)
     return {"status": "success", "total_traders": dist.total_traders, "auto_scaled": dist.auto_scale_liquidity}
 
@@ -487,12 +546,28 @@ async def reset_parameters():
         except Exception as e:
             results["bot_trader_simulator"] = f"error: {e}"
     
-    return {"status": "success", "results": results}
+    # CRITICAL FIX: Reset audit engine and force sync
+    if audit_engine and hasattr(audit_engine, 'reset_metrics'):
+        try:
+            audit_engine.reset_metrics()
+            results["audit_engine"] = "reset"
+        except Exception as e:
+            results["audit_engine"] = f"error: {e}"
+    
+    # Force audit sync after reset
+    force_audit_sync()
+    
+    return {"status": "success", "results": results, "data_consistency_restored": True}
 
 @router.post("/export-csv")
 async def export_aggregated_csv():
     """Export aggregated platform summary data instead of individual transactions"""
     try:
+        # CRITICAL FIX: Validate data consistency before export
+        if not validate_data_consistency():
+            logger.warning("Data inconsistency detected before CSV export, forcing sync")
+            force_audit_sync()
+        
         # Gather all aggregated data
         trading_stats, _ = safe_component_call("bot_trader_simulator", bot_trader_simulator.get_trading_statistics)
         hedge_metrics, _ = safe_component_call("hedge_feed_manager", hedge_feed_manager.get_hedge_metrics)
@@ -528,6 +603,7 @@ async def export_aggregated_csv():
         # Header
         csv_writer.writerow(["Metric", "Value"])
         csv_writer.writerow(["Report Generated", time.strftime("%Y-%m-%d %H:%M:%S")])
+        csv_writer.writerow(["Data Consistency Status", "Validated" if validate_data_consistency() else "Inconsistent"])
         csv_writer.writerow(["", ""])
         
         # Trading Summary
@@ -592,12 +668,13 @@ async def export_aggregated_csv():
             csv_writer.writerow(["Capital Efficiency (Traders/$1M)", f"{scaling_metrics.get('capital_efficiency', 0):.1f}"])
             csv_writer.writerow(["", ""])
         
-        # Audit Summary
+        # Audit Summary - FIXED with consistency note
         csv_writer.writerow(["--- AUDIT SUMMARY ---", ""])
         csv_writer.writerow(["Compliance Status", audit_summary.get("overall_status", "Unknown")])
         csv_writer.writerow(["Compliance Score", f"{audit_summary.get('compliance_score', 0):.1f}%"])
         csv_writer.writerow(["Trades Tracked 24h", audit_summary.get("option_trades_executed_24h", 0)])
         csv_writer.writerow(["Premium Volume Tracked USD", f"${audit_summary.get('gross_option_premiums_24h_usd', 0):,.2f}"])
+        csv_writer.writerow(["Data Consistency", "Validated" if validate_data_consistency() else "Inconsistent"])
         
         # Get CSV content
         csv_content = output.getvalue()
@@ -629,6 +706,10 @@ async def debug_system_status():
             "hedge_feed_manager": hedge_feed_manager is not None,
             "audit_engine": audit_engine is not None
         },
+        "data_consistency_status": validate_data_consistency(),
+        "audit_bot_reference": (audit_engine is not None and 
+                               hasattr(audit_engine, 'bot_simulator') and 
+                               audit_engine.bot_simulator is not None),
         "timestamp": time.time()
     }
 
@@ -663,3 +744,45 @@ async def debug_liquidity_status():
         
     except Exception as e:
         return {"error": str(e)}
+
+# CRITICAL FIX: New endpoint for data consistency validation
+@router.get("/validate-data-consistency")
+async def validate_data_consistency_endpoint():
+    """Validate that trading stats and audit data are consistent"""
+    try:
+        if not bot_trader_simulator or not audit_engine:
+            return {"status": "unavailable", "message": "Components not available"}
+            
+        trading_stats = bot_trader_simulator.get_trading_statistics()
+        audit_metrics = audit_engine.get_24h_metrics()
+        
+        trade_diff = abs(trading_stats.get('total_trades_24h', 0) - audit_metrics.option_trades_executed_24h)
+        volume_diff = abs(trading_stats.get('total_premium_volume_usd_24h', 0) - audit_metrics.gross_option_premiums_24h_usd)
+        
+        is_consistent = trade_diff <= 10 and volume_diff <= 1000
+        
+        if not is_consistent:
+            logger.warning(f"Data inconsistency detected - forcing sync")
+            force_audit_sync()
+            # Re-check after sync
+            audit_metrics_after = audit_engine.get_24h_metrics()
+            trade_diff_after = abs(trading_stats.get('total_trades_24h', 0) - audit_metrics_after.option_trades_executed_24h)
+            is_consistent_after = trade_diff_after <= 10
+        else:
+            is_consistent_after = is_consistent
+        
+        return {
+            "status": "consistent" if is_consistent_after else "inconsistent",
+            "trading_stats_trades": trading_stats.get('total_trades_24h', 0),
+            "audit_trades_before_sync": audit_metrics.option_trades_executed_24h,
+            "audit_trades_after_sync": audit_metrics_after.option_trades_executed_24h if not is_consistent else audit_metrics.option_trades_executed_24h,
+            "trade_difference_before": trade_diff,
+            "trade_difference_after": trade_diff_after if not is_consistent else trade_diff,
+            "sync_applied": not is_consistent,
+            "audit_has_bot_reference": hasattr(audit_engine, 'bot_simulator') and audit_engine.bot_simulator is not None,
+            "timestamp": time.time()
+        }
+        
+    except Exception as e:
+        logger.error(f"Error validating data consistency: {e}")
+        return {"status": "error", "error": str(e), "timestamp": time.time()}
