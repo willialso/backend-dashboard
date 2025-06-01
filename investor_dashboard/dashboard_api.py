@@ -231,17 +231,17 @@ async def get_recent_trades(limit: int = 10):
 
 @router.get("/liquidity-allocation")
 async def get_liquidity_allocation():
-    """FIXED: Updated to use new LiquidityManager methods"""
+    """FIXED: Updated to use new LiquidityManager methods with corrected fallback values"""
     start = time.time()
     if not liquidity_manager:
         log_api_call("/liquidity-allocation", "error - no liquidity manager", (time.time()-start)*1000)
         return safe_convert_dict({
             "liquidity_ratio": 1.923,
             "total_pool_usd": config.LM_INITIAL_TOTAL_POOL_USD,
-            "liquidity_percentage": 75.0,
-            "operations_percentage": 25.0,
+            "liquidity_percentage": 90.0,  # FIXED: Changed from 75.0 to 90.0
+            "operations_percentage": 10.0,  # FIXED: Changed from 25.0 to 10.0
             "utilized_amount_usd": 0.0,
-            "available_amount_usd": config.LM_INITIAL_TOTAL_POOL_USD * 0.75,
+            "available_amount_usd": config.LM_INITIAL_TOTAL_POOL_USD * 0.90,  # FIXED: Changed from 0.75 to 0.90
             "utilization_pct": 0.0,
             "stress_test_status": "UNKNOWN",
             "error": "Liquidity manager not available",
@@ -255,10 +255,10 @@ async def get_liquidity_allocation():
         return safe_convert_dict({
             "liquidity_ratio": 1.923,
             "total_pool_usd": config.LM_INITIAL_TOTAL_POOL_USD,
-            "liquidity_percentage": 75.0,
-            "operations_percentage": 25.0,
+            "liquidity_percentage": 90.0,  # FIXED: Changed from 75.0 to 90.0
+            "operations_percentage": 10.0,  # FIXED: Changed from 25.0 to 10.0
             "utilized_amount_usd": 0.0,
-            "available_amount_usd": config.LM_INITIAL_TOTAL_POOL_USD * 0.75,
+            "available_amount_usd": config.LM_INITIAL_TOTAL_POOL_USD * 0.90,  # FIXED: Changed from 0.75 to 0.90
             "utilization_pct": 0.0,
             "stress_test_status": "UNKNOWN",
             "error": err,
@@ -937,7 +937,7 @@ async def complete_system_reset():
 
 @router.post("/export-csv")
 async def export_aggregated_csv():
-    """FIXED: Export cleaned CSV with removed sections and added hedge P&L"""
+    """FIXED: Export cleaned CSV with allocation percentage lines COMPLETELY REMOVED"""
     try:
         # CRITICAL FIX: Validate data consistency before export
         if not validate_data_consistency():
@@ -1003,11 +1003,12 @@ async def export_aggregated_csv():
         csv_writer.writerow(["Daily Revenue USD", f"${revenue_metrics.get('daily_revenue_usd', 0):,.2f}"])
         csv_writer.writerow(["", ""])
         
-        # Liquidity Metrics (KEEP)
+        # Liquidity Metrics (KEEP - BUT ALLOCATION PERCENTAGES COMPLETELY REMOVED)
         csv_writer.writerow(["--- LIQUIDITY METRICS ---", ""])
         csv_writer.writerow(["Total Pool USD", f"${liquidity_allocation.get('total_pool_usd', 0):,.2f}"])
-        csv_writer.writerow(["Liquidity Allocation %", f"{liquidity_allocation.get('liquidity_percentage', 0):.1f}%"]) # Remove old 75/25 allocation
-        csv_writer.writerow(["Operations Allocation %", f"{liquidity_allocation.get('operations_percentage', 0):.1f}%"])# Revove old 75/25 allocation
+        # COMPLETELY REMOVED: The two allocation percentage lines that were causing 75/25 display
+        # csv_writer.writerow(["Liquidity Allocation %", f"{liquidity_allocation.get('liquidity_percentage', 0):.1f}%"])
+        # csv_writer.writerow(["Operations Allocation %", f"{liquidity_allocation.get('operations_percentage', 0):.1f}%"])
         csv_writer.writerow(["Utilized Amount USD", f"${liquidity_allocation.get('utilized_amount_usd', 0):,.2f}"])
         csv_writer.writerow(["Available Amount USD", f"${liquidity_allocation.get('available_amount_usd', 0):,.2f}"])
         csv_writer.writerow(["Utilization %", f"{liquidity_allocation.get('utilization_pct', 0):.1f}%"])
