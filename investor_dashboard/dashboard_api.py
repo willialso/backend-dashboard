@@ -1006,8 +1006,8 @@ async def export_aggregated_csv():
         # Liquidity Metrics (KEEP)
         csv_writer.writerow(["--- LIQUIDITY METRICS ---", ""])
         csv_writer.writerow(["Total Pool USD", f"${liquidity_allocation.get('total_pool_usd', 0):,.2f}"])
-        csv_writer.writerow(["Liquidity Allocation %", f"{liquidity_allocation.get('liquidity_percentage', 0):.1f}%"])
-        csv_writer.writerow(["Operations Allocation %", f"{liquidity_allocation.get('operations_percentage', 0):.1f}%"])
+        csv_writer.writerow(["Liquidity Allocation %", f"{liquidity_allocation.get('liquidity_percentage', 0):.1f}%"]) # Remove old 75/25 allocation
+        csv_writer.writerow(["Operations Allocation %", f"{liquidity_allocation.get('operations_percentage', 0):.1f}%"])# Revove old 75/25 allocation
         csv_writer.writerow(["Utilized Amount USD", f"${liquidity_allocation.get('utilized_amount_usd', 0):,.2f}"])
         csv_writer.writerow(["Available Amount USD", f"${liquidity_allocation.get('available_amount_usd', 0):,.2f}"])
         csv_writer.writerow(["Utilization %", f"{liquidity_allocation.get('utilization_pct', 0):.1f}%"])
